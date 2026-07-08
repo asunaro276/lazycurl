@@ -1,0 +1,29 @@
+schema: spec-driven
+
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+context: |
+  言語：日本語
+  すべての成果物（proposal, tasks, specなど）は日本語で作成してください。
+  ただし以下は英語のまま残してください：
+  - API, REST, HTTP, TUI などの技術用語
+  - コード例、ファイルパス、コマンド、識別子名
+
+  lazycurl: API通信をテストするためのクライアントTUIツール。
+  lazygit, lazydocker, lazysqlにインスパイアされたGo製のCLIツール。
+
+  Tech stack:
+    - 言語: Go
+    - TUI: Bubble Tea (charmbracelet/bubbletea) + lipgloss + bubbles
+
+  規約:
+    - コミットメッセージの規約は特になし（自由形式）
+
+  ドメイン: 開発者向けツール / APIクライアントTUI
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+rules:
+  proposal:
+    - 簡潔にまとめること

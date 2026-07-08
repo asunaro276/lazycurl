@@ -32,7 +32,8 @@ var tabLabels = []string{"Params", "Headers", "Auth", "Body"}
 type focusZone int
 
 const (
-	focusMethod focusZone = iota
+	focusName focusZone = iota
+	focusMethod
 	focusURL
 	focusContent
 )
@@ -77,6 +78,7 @@ type Editor struct {
 func New() Editor {
 	name := textinput.New()
 	name.Placeholder = "Request name"
+	name.Focus()
 
 	u := textinput.New()
 	u.Placeholder = "https://{{host}}/path"
@@ -105,7 +107,7 @@ func New() Editor {
 		authToken: token,
 		body:      body,
 		pragTO:    to,
-		focus:     focusMethod,
+		focus:     focusName,
 		tab:       TabParams,
 	}
 }
@@ -184,10 +186,13 @@ func (e *Editor) blurAll() {
 	e.pragTO.Blur()
 }
 
-// FocusNext cycles top-level focus: Method -> URL -> content (active tab).
+// FocusNext cycles top-level focus: Name -> Method -> URL -> content
+// (active tab) -> Name.
 func (e *Editor) FocusNext() {
 	e.blurAll()
 	switch e.focus {
+	case focusName:
+		e.focus = focusMethod
 	case focusMethod:
 		e.focus = focusURL
 		e.url.Focus()
@@ -195,7 +200,8 @@ func (e *Editor) FocusNext() {
 		e.focus = focusContent
 		e.focusActiveTab()
 	case focusContent:
-		e.focus = focusMethod
+		e.focus = focusName
+		e.Name.Focus()
 	}
 }
 
@@ -272,6 +278,11 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 	}
 
 	switch e.focus {
+	case focusName:
+		var cmd tea.Cmd
+		e.Name, cmd = e.Name.Update(msg)
+		return e, cmd
+
 	case focusMethod:
 		if km, ok := msg.(tea.KeyMsg); ok {
 			switch km.String() {
@@ -435,6 +446,15 @@ var (
 // View renders the form.
 func (e Editor) View() string {
 	var b strings.Builder
+
+	nameView := e.Name.View()
+	if e.focus == focusName {
+		nameView = styleFocusBorder.Render(nameView)
+	} else {
+		nameView = stylePlainBorder.Render(nameView)
+	}
+	b.WriteString(nameView)
+	b.WriteString("\n\n")
 
 	methodView := Methods[e.methodIdx]
 	if e.focus == focusMethod {

@@ -98,13 +98,19 @@ go build -o lazycurl ./cmd/lazycurl
 
 ### `.claude/settings.local.json` について
 
-このファイルはリポジトリに含まれており、Claude Code のセッションで許可されている操作を定義しています。プロジェクト内での主な許可内容は以下のとおりです。
+`.claude/settings.local.json` はユーザーごとのローカル権限設定ファイルで、Claude Code の慣習上リポジトリにはコミットされません(このリポジトリにも含まれていません)。openspec コマンドなどの実行をセッションごとに毎回許可したくない場合は、各自で以下の内容を作成してください。
 
-- `WebFetch(domain:github.com)` — GitHub へのフェッチ
-- `Bash(openspec *)` — openspec コマンドの実行
-- ファイル整理用の `mv` / `rmdir` 操作
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(openspec *)"
+    ]
+  }
+}
+```
 
-**このファイルを手動で変更する必要は通常ありません。**
+必要に応じて `WebFetch(domain:github.com)` や、ファイル整理用の `mv` / `rmdir` などの許可も追加できます。
 
 ---
 
@@ -114,11 +120,13 @@ go build -o lazycurl ./cmd/lazycurl
 
 ### インストール
 
+npm の `openspec` パッケージ名は無関係の別プロジェクトに占有されているため、必ずスコープ付きパッケージ名でインストールしてください。
+
 ```sh
-npm install -g openspec
+npm install -g @fission-ai/openspec
 ```
 
-> インストール後、`openspec --version` でバージョン（1.5.x）が表示されることを確認してください。
+> インストール後、`openspec --version` でバージョンが表示されることを確認してください。
 
 ### 動作確認
 
@@ -135,20 +143,19 @@ openspec list
 ```
 openspec/
 ├── config.yaml          # プロジェクトコンテキスト・ルール定義
-├── specs/               # 機能仕様（spec.md）
+├── specs/                 # 確定済みの機能仕様（spec.md）
 │   ├── tui-shell/
 │   ├── collection-storage/
 │   ├── curl-execution/
 │   ├── environment-variables/
-│   ├── request-editor/
-│   ├── adhoc-request-mode/
-│   ├── stream-response-body/
-│   └── archive/
-└── changes/             # 進行中・完了した変更（proposal/design/tasks）
+│   └── request-editor/
+└── changes/               # 進行中・完了した変更（proposal/design/tasks）
     ├── adhoc-request-mode/
     ├── stream-response-body/
-    └── archive/
+    └── archive/            # アーカイブ済みの変更
 ```
+
+各ディレクトリの詳細な構成はリポジトリ内の実体（`ls openspec/specs` / `ls openspec/changes`）で随時確認してください。
 
 ### `openspec/config.yaml` の概要
 
@@ -252,7 +259,7 @@ lazycurl/
 │   ├── specs/
 │   └── changes/
 ├── .claude/
-│   ├── settings.local.json  # Claude Code 権限設定
+│   ├── settings.local.json  # Claude Code 権限設定（各自で作成、リポジトリには未コミット）
 │   ├── commands/opsx/       # カスタムスラッシュコマンド定義
 │   └── skills/              # openspec 連携スキル定義
 ├── go.mod
@@ -314,19 +321,9 @@ export PATH="$HOME/.npm-global/bin:$PATH"
 source ~/.zshrc
 ```
 
-### Claude Code セッションで openspec コマンドが実行できない
+### Claude Code セッションで openspec コマンドの許可を毎回聞かれる
 
-`.claude/settings.local.json` に `Bash(openspec *)` の許可が含まれていることを確認してください。
-
-```json
-{
-  "permissions": {
-    "allow": [
-      "Bash(openspec *)"
-    ]
-  }
-}
-```
+[`.claude/settings.local.json` について](#プロジェクト固有の初期設定)の項を参照し、`Bash(openspec *)` を許可する設定を作成してください。
 
 ### WSL 上での PATH 問題
 
@@ -353,4 +350,4 @@ go mod tidy
 - [lazycurl GitHub リポジトリ](https://github.com/asunaro276/lazycurl)
 - [Claude Code ドキュメント](https://docs.anthropic.com/claude-code)
 - [Bubble Tea ドキュメント](https://github.com/charmbracelet/bubbletea)
-- [openspec CLI](https://www.npmjs.com/package/openspec)
+- [openspec CLI](https://www.npmjs.com/package/@fission-ai/openspec)

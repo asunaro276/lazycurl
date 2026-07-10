@@ -33,16 +33,27 @@ curl --version
 lazycurl
 ```
 
+### Adhoc / Collections モード
+
+lazycurlは`Adhoc`と`Collections`の2モードを持ち、`[`/`]`キーでいつでも切り替えられます。アクティブなモードは画面上部のタブでハイライト表示されます。起動時のデフォルトは`Adhoc`モードです。
+
+- **Adhoc**: コレクションを作成・選択しなくても、その場でリクエストを組み立てて送信できるモード。編集フォーム+Response+Historyの3ペインで構成されます。組み立てたリクエストは保存する(`s`キー)までメモリ内にのみ存在し、`{{variable}}`展開も行われません。
+- **Collections**: 従来通りのCollections/Requests/Response/Historyの4パネルレイアウト。コレクション単位でリクエストを管理し、environment変数の展開・切り替えができます。
+
+Adhocモードで組み立てたリクエストは`s`キーでいつでも保存できます。既存コレクションを選ぶか新規コレクションを作成するかを選択でき、保存後は自動的に`Collections`モードへ切り替わり、保存先のコレクション・リクエストが選択された状態になります。実行履歴(History)は両モードで共有されます。
+
 ### キーバインド(lazygit互換)
 
 | キー | 動作 |
 | --- | --- |
+| `[` / `]` | Adhoc/Collectionsモードの切り替え |
 | `tab` / `shift+tab` | パネル間移動 |
-| `1`-`4` | パネルへジャンプ(Collections/Requests/Response/History) |
+| `1`-`4` | パネルへジャンプ(Adhocモードでは1-3: Editor/Response/History、Collectionsモードでは1-4: Collections/Requests/Response/History) |
 | `j` / `k` | 上下移動 |
-| `enter` | 選択項目を送信・確定 |
+| `enter` | 選択項目を送信・確定(Adhocモードでは組み立て中のリクエストを送信) |
 | `n` | 新規作成(コレクション/リクエスト) |
-| `e` | リクエストの編集 |
+| `e` | リクエストの編集(Adhocモードでは組み立て中のリクエストを編集) |
+| `s` | Adhocモードのリクエストをコレクションへ保存 |
 | `c` | リクエストの複製 |
 | `d` / `x` | リクエストの削除 |
 | `E` | environmentの切り替え |

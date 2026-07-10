@@ -18,19 +18,63 @@ var (
 	overlayBox           = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1, 2)
 	statusBarStyle       = lipgloss.NewStyle().Faint(true)
 	errorStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+	modeTabActive        = lipgloss.NewStyle().Bold(true).Reverse(true).Padding(0, 1)
+	modeTabInactive      = lipgloss.NewStyle().Faint(true).Padding(0, 1)
 )
 
-// View renders the full shell: four panels plus a status bar, with any
-// active overlay drawn on top.
+// modeBarHeight is the number of terminal rows the mode-tab bar occupies.
+const modeBarHeight = 1
+
+// View renders the full shell: the mode-tab bar, the active mode's panel
+// layout, and a status bar, with any active overlay drawn on top.
 func (s *Shell) View() string {
 	if s.width == 0 {
 		return "loading..."
 	}
 
+	var body string
+	if s.mode == ModeAdhoc {
+		body = s.viewAdhocLayout()
+	} else {
+		body = s.viewCollectionsLayout()
+	}
+
+	main := lipgloss.JoinVertical(lipgloss.Left, s.viewModeTabs(), body, s.viewStatusBar())
+
+	switch s.overlay {
+	case overlayHelp:
+		return overlayBox.Render(s.viewHelp())
+	case overlayEnvSelect:
+		return overlayBox.Render(s.viewEnvSelect())
+	case overlayNewCollection:
+		return overlayBox.Render("新規コレクション名:\n\n> " + s.input + "_")
+	case overlaySaveAdhoc:
+		return overlayBox.Render(s.viewSaveAdhoc())
+	case overlayConfirmDelete:
+		return overlayBox.Render(fmt.Sprintf("リクエスト %q を削除しますか? (y/n)", s.currentRequestName()))
+	}
+	return main
+}
+
+// viewModeTabs renders the Adhoc/Collections mode tabs, highlighting the
+// active one.
+func (s *Shell) viewModeTabs() string {
+	adhoc, collections := "Adhoc", "Collections"
+	if s.mode == ModeAdhoc {
+		adhoc = modeTabActive.Render(adhoc)
+		collections = modeTabInactive.Render(collections)
+	} else {
+		adhoc = modeTabInactive.Render(adhoc)
+		collections = modeTabActive.Render(collections)
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, adhoc, " ", collections)
+}
+
+func (s *Shell) viewCollectionsLayout() string {
 	leftWidth := s.width / 4
 	rightWidth := s.width - leftWidth - 1
-	topHeight := s.height * 2 / 3
-	bottomHeight := s.height - topHeight - 3 // leave room for status bar
+	topHeight := (s.height - modeBarHeight) * 2 / 3
+	bottomHeight := (s.height - modeBarHeight) - topHeight - 3 // leave room for status bar
 
 	collectionsPanel := s.renderPanel(PanelCollections, leftWidth, topHeight, s.viewCollections())
 	requestsPanel := s.renderPanel(PanelRequests, leftWidth, bottomHeight, s.viewRequests())
@@ -40,21 +84,67 @@ func (s *Shell) View() string {
 	historyPanel := s.renderPanel(PanelHistory, rightWidth, bottomHeight, s.viewHistory())
 	right := lipgloss.JoinVertical(lipgloss.Left, responsePanel, historyPanel)
 
-	body := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+}
 
-	main := lipgloss.JoinVertical(lipgloss.Left, body, s.viewStatusBar())
+// viewAdhocLayout renders Adhoc mode's 3-pane layout: the request editor on
+// the left (full height), Response and History stacked on the right.
+func (s *Shell) viewAdhocLayout() string {
+	leftWidth := s.width / 2
+	rightWidth := s.width - leftWidth - 1
+	fullHeight := s.height - modeBarHeight - 3 // leave room for status bar
+	topHeight := fullHeight * 2 / 3
+	bottomHeight := fullHeight - topHeight
 
-	switch s.overlay {
-	case overlayHelp:
-		return overlayBox.Render(s.viewHelp())
-	case overlayEnvSelect:
-		return overlayBox.Render(s.viewEnvSelect())
-	case overlayNewCollection:
-		return overlayBox.Render("新規コレクション名:\n\n> " + s.input + "_")
-	case overlayConfirmDelete:
-		return overlayBox.Render(fmt.Sprintf("リクエスト %q を削除しますか? (y/n)", s.currentRequestName()))
+	editorPanel := s.renderPanel(PanelEditor, leftWidth, fullHeight, s.viewAdhocEditor())
+
+	responsePanel := s.renderPanel(PanelResponse, rightWidth, topHeight, s.viewResponse())
+	historyPanel := s.renderPanel(PanelHistory, rightWidth, bottomHeight, s.viewHistory())
+	right := lipgloss.JoinVertical(lipgloss.Left, responsePanel, historyPanel)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, editorPanel, right)
+}
+
+func (s *Shell) viewAdhocEditor() string {
+	req := s.adhocRequest
+	method := req.Method
+	if method == "" {
+		method = "GET"
 	}
-	return main
+	url := req.URL
+	if url == "" {
+		url = "(URLが未入力です)"
+	}
+
+	var b strings.Builder
+	b.WriteString(styles.MethodBadge(padMethod(method)) + " " + url + "\n\n")
+	b.WriteString(fmt.Sprintf("Headers: %d件\n", len(req.Headers)))
+	if req.Body != "" {
+		b.WriteString("Body: あり\n")
+	} else {
+		b.WriteString("Body: なし\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(statusBarStyle.Render("e: 編集  enter: 送信  s: コレクションへ保存"))
+	return b.String()
+}
+
+func (s *Shell) viewSaveAdhoc() string {
+	var b strings.Builder
+	b.WriteString(panelTitle.Render("保存先コレクションを選択") + "\n\n")
+	for i, c := range s.collections {
+		line := c.Name
+		if i == s.saveIdx {
+			line = listSelected.Render(line)
+		}
+		b.WriteString(line + "\n")
+	}
+	newLine := "+ 新規コレクションを作成"
+	if s.saveIdx == len(s.collections) {
+		newLine = listSelected.Render(newLine)
+	}
+	b.WriteString(newLine)
+	return b.String()
 }
 
 func (s *Shell) currentRequestName() string {
@@ -178,13 +268,17 @@ func (s *Shell) viewStatusBar() string {
 	if s.statusMsg != "" {
 		return errorStyle.Render(s.statusMsg)
 	}
-	return statusBarStyle.Render("tab: 切替  j/k: 移動  enter: 送信/選択  n: 新規  e: 編集  ?: ヘルプ  q: 終了")
+	if s.mode == ModeAdhoc {
+		return statusBarStyle.Render("[/]: モード切替  tab: 切替  enter: 送信  e: 編集  s: 保存  ?: ヘルプ  q: 終了")
+	}
+	return statusBarStyle.Render("[/]: モード切替  tab: 切替  j/k: 移動  enter: 送信/選択  n: 新規  e: 編集  ?: ヘルプ  q: 終了")
 }
 
 func (s *Shell) viewHelp() string {
 	var lines []string
 	lines = append(lines, panelTitle.Render("キーバインド ("+panelLabels[s.focus]+")"))
 	lines = append(lines, "")
+	lines = append(lines, "[ / ]             モード切替 (Adhoc / Collections)")
 	lines = append(lines, "tab / shift+tab   パネル間移動")
 	lines = append(lines, "1-4               パネルへジャンプ")
 	lines = append(lines, "j/k               上下移動")
@@ -207,6 +301,10 @@ func (s *Shell) viewHelp() string {
 		lines = append(lines, "enter             選択した履歴をResponseパネルに表示")
 	case PanelResponse:
 		lines = append(lines, "(表示専用)")
+	case PanelEditor:
+		lines = append(lines, "enter             リクエスト送信")
+		lines = append(lines, "e                 リクエスト編集")
+		lines = append(lines, "s                 コレクションへ保存")
 	}
 	lines = append(lines, "")
 	lines = append(lines, "(閉じる: esc / ? / enter)")

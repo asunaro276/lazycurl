@@ -58,23 +58,27 @@ func (s *Shell) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case "?":
 		s.overlay = overlayHelp
 		return nil
+	case "[", "]":
+		s.toggleMode()
+		return nil
+	case "s":
+		if s.mode == ModeAdhoc {
+			s.overlay = overlaySaveAdhoc
+			s.saveIdx = 0
+			return nil
+		}
 	case "tab":
-		s.focus = Panel((int(s.focus) + 1) % 4)
+		s.focusNext()
 		return nil
 	case "shift+tab":
-		s.focus = Panel((int(s.focus) + 3) % 4)
+		s.focusPrev()
 		return nil
-	case "1":
-		s.focus = PanelCollections
-		return nil
-	case "2":
-		s.focus = PanelRequests
-		return nil
-	case "3":
-		s.focus = PanelResponse
-		return nil
-	case "4":
-		s.focus = PanelHistory
+	case "1", "2", "3", "4":
+		panels := s.panelsForMode()
+		n := int(msg.String()[0] - '1')
+		if n < len(panels) {
+			s.focus = panels[n]
+		}
 		return nil
 	}
 
@@ -87,6 +91,71 @@ func (s *Shell) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return s.handleHistoryKey(msg)
 	case PanelResponse:
 		return s.handleResponseKey(msg)
+	case PanelEditor:
+		return s.handleEditorPanelKey(msg)
+	}
+	return nil
+}
+
+// panelsForMode returns the ordered panel set navigable in the shell's
+// current mode: the 3-pane Adhoc layout, or the 4-pane Collections layout.
+func (s *Shell) panelsForMode() []Panel {
+	if s.mode == ModeAdhoc {
+		return []Panel{PanelEditor, PanelResponse, PanelHistory}
+	}
+	return []Panel{PanelCollections, PanelRequests, PanelResponse, PanelHistory}
+}
+
+func panelIndex(panels []Panel, p Panel) (int, bool) {
+	for i, x := range panels {
+		if x == p {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+func (s *Shell) focusNext() {
+	panels := s.panelsForMode()
+	idx, _ := panelIndex(panels, s.focus)
+	s.focus = panels[(idx+1)%len(panels)]
+}
+
+func (s *Shell) focusPrev() {
+	panels := s.panelsForMode()
+	idx, _ := panelIndex(panels, s.focus)
+	s.focus = panels[(idx-1+len(panels))%len(panels)]
+}
+
+// toggleMode switches between Adhoc and Collections, closing any open
+// overlay and resetting focus to the new mode's first panel unless the
+// current focus (e.g. Response/History) is still valid there.
+func (s *Shell) toggleMode() {
+	if s.mode == ModeAdhoc {
+		s.mode = ModeCollections
+	} else {
+		s.mode = ModeAdhoc
+	}
+	panels := s.panelsForMode()
+	if _, ok := panelIndex(panels, s.focus); !ok {
+		s.focus = panels[0]
+	}
+	s.overlay = overlayNone
+}
+
+// handleEditorPanelKey handles input while Adhoc mode's Editor panel is
+// focused: 'e' opens the request-editor form (via OpenEditorMsg, reusing the
+// same App-owned form as Collections mode), 'enter' sends the scratch
+// request as-is.
+func (s *Shell) handleEditorPanelKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "e":
+		req := s.adhocRequest
+		return func() tea.Msg {
+			return OpenEditorMsg{CollectionName: "", Request: req, Index: -1}
+		}
+	case "enter":
+		return s.sendAdhocCurrent()
 	}
 	return nil
 }
@@ -233,6 +302,7 @@ func (s *Shell) handleOverlayKey(msg tea.KeyMsg) tea.Cmd {
 		switch msg.String() {
 		case "esc":
 			s.overlay = overlayNone
+			s.savingAdhoc = false
 		case "enter":
 			name := strings.TrimSpace(s.input)
 			if name != "" {
@@ -246,9 +316,14 @@ func (s *Shell) handleOverlayKey(msg tea.KeyMsg) tea.Cmd {
 							s.collectionIdx = i
 						}
 					}
-					_ = s.loadRequestsForCurrentCollection()
+					if s.savingAdhoc {
+						s.finishAdhocSave(name)
+					} else {
+						_ = s.loadRequestsForCurrentCollection()
+					}
 				}
 			}
+			s.savingAdhoc = false
 			s.overlay = overlayNone
 		case "backspace":
 			if len(s.input) > 0 {
@@ -258,6 +333,32 @@ func (s *Shell) handleOverlayKey(msg tea.KeyMsg) tea.Cmd {
 			if msg.Type == tea.KeyRunes {
 				s.input += string(msg.Runes)
 			}
+		}
+		return nil
+
+	case overlaySaveAdhoc:
+		switch msg.String() {
+		case "esc", "q":
+			s.overlay = overlayNone
+		case "j", "down":
+			if s.saveIdx < len(s.collections) {
+				s.saveIdx++
+			}
+		case "k", "up":
+			if s.saveIdx > 0 {
+				s.saveIdx--
+			}
+		case "enter":
+			if s.saveIdx == len(s.collections) {
+				s.savingAdhoc = true
+				s.overlay = overlayNewCollection
+				s.input = ""
+				return nil
+			}
+			if s.saveIdx < len(s.collections) {
+				s.finishAdhocSave(s.collections[s.saveIdx].Name)
+			}
+			s.overlay = overlayNone
 		}
 		return nil
 
@@ -276,6 +377,29 @@ func (s *Shell) handleOverlayKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	return nil
+}
+
+// finishAdhocSave appends the Adhoc scratch request to collectionName's
+// `.http` file, then switches to Collections mode with that collection and
+// the newly-saved request selected, and resets the scratch request.
+func (s *Shell) finishAdhocSave(collectionName string) {
+	if err := s.colStore.CreateRequest(collectionName, s.adhocRequest); err != nil {
+		s.statusMsg = err.Error()
+		return
+	}
+	for i, c := range s.collections {
+		if c.Name == collectionName {
+			s.collectionIdx = i
+		}
+	}
+	if err := s.loadRequestsForCurrentCollection(); err != nil {
+		s.statusMsg = err.Error()
+		return
+	}
+	s.requestIdx = max0(len(s.requests) - 1)
+	s.adhocRequest = httpfile.Request{Method: "GET"}
+	s.mode = ModeCollections
+	s.focus = PanelRequests
 }
 
 func (s *Shell) cancel() {
@@ -320,6 +444,37 @@ func (s *Shell) sendCurrent() tea.Cmd {
 		return sendResultMsg{entry: HistoryEntry{
 			CollectionName: collectionName,
 			Request:        expanded,
+			Response:       resp,
+			Err:            err,
+			At:             time.Now(),
+		}}
+	}
+}
+
+// sendAdhocCurrent executes the Adhoc scratch request as-is, with no
+// {{variable}} expansion (Adhoc requests aren't tied to a collection or
+// environment).
+func (s *Shell) sendAdhocCurrent() tea.Cmd {
+	if s.sending {
+		return nil
+	}
+	req := s.adhocRequest
+	if strings.TrimSpace(req.URL) == "" {
+		s.statusMsg = "URLを入力してください"
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cancelSend = cancel
+	s.sending = true
+	s.statusMsg = ""
+
+	executor := s.executor
+	return func() tea.Msg {
+		resp, err := executor.Execute(ctx, req)
+		return sendResultMsg{entry: HistoryEntry{
+			CollectionName: "",
+			Request:        req,
 			Response:       resp,
 			Err:            err,
 			At:             time.Now(),

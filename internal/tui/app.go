@@ -110,6 +110,15 @@ func (a *App) updateEditor(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (a *App) saveEditor() error {
 	req := a.editor.ToRequest()
+
+	// An empty collection name means this edit originated from Adhoc mode
+	// (shell.OpenEditorMsg.CollectionName == ""): update the shell's
+	// in-memory scratch request instead of touching disk.
+	if a.editingCol == "" {
+		a.shell.SetAdhocRequest(req)
+		return nil
+	}
+
 	requests, err := a.colStore.LoadRequests(a.editingCol)
 	if err != nil {
 		return err

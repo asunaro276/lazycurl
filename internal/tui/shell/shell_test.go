@@ -207,3 +207,188 @@ func TestShellEnvSwitching(t *testing.T) {
 		t.Fatalf("expected successful send, history=%+v", s.history)
 	}
 }
+
+// newEmptyTestShell returns a Shell with no collections at all, to exercise
+// Adhoc mode's "no collection required" guarantees.
+func newEmptyTestShell(t *testing.T) *Shell {
+	t.Helper()
+	dir := t.TempDir()
+	colStore := collection.NewStore(filepath.Join(dir, "collections"))
+	envStore := environment.NewStore(filepath.Join(dir, "env"), filepath.Join(dir, "state.json"))
+	executor := curlexec.NewExecutorWithRunner(&stubRunner{statusCode: 200, body: "ok"})
+
+	s, err := New(colStore, envStore, executor)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s.SetSize(120, 40)
+	return s
+}
+
+func TestShellDefaultsToAdhocMode(t *testing.T) {
+	s := newTestShell(t)
+	if s.Mode() != ModeAdhoc {
+		t.Fatalf("expected default mode Adhoc, got %v", s.Mode())
+	}
+	if s.focus != PanelEditor {
+		t.Fatalf("expected default focus PanelEditor, got %v", s.focus)
+	}
+}
+
+func TestShellModeSwitchAndPanelCycling(t *testing.T) {
+	s := newTestShell(t)
+
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
+	if s.Mode() != ModeCollections {
+		t.Fatalf("expected Collections mode after ']', got %v", s.Mode())
+	}
+	if s.focus != PanelCollections {
+		t.Fatalf("expected focus reset to PanelCollections, got %v", s.focus)
+	}
+
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("[")})
+	if s.Mode() != ModeAdhoc {
+		t.Fatalf("expected Adhoc mode after '[', got %v", s.Mode())
+	}
+	if s.focus != PanelEditor {
+		t.Fatalf("expected focus reset to PanelEditor, got %v", s.focus)
+	}
+
+	// tab cycles only through Adhoc's 3 panels: Editor -> Response -> History -> Editor.
+	s.handleKey(tea.KeyMsg{Type: tea.KeyTab})
+	if s.focus != PanelResponse {
+		t.Fatalf("expected PanelResponse after tab, got %v", s.focus)
+	}
+	s.handleKey(tea.KeyMsg{Type: tea.KeyTab})
+	if s.focus != PanelHistory {
+		t.Fatalf("expected PanelHistory after tab, got %v", s.focus)
+	}
+	s.handleKey(tea.KeyMsg{Type: tea.KeyTab})
+	if s.focus != PanelEditor {
+		t.Fatalf("expected wrap back to PanelEditor, got %v", s.focus)
+	}
+}
+
+func TestShellAdhocEditAndSendWithoutCollection(t *testing.T) {
+	s := newEmptyTestShell(t)
+	if len(s.collections) != 0 {
+		t.Fatalf("expected no collections, got %+v", s.collections)
+	}
+	if s.Mode() != ModeAdhoc {
+		t.Fatalf("expected Adhoc mode, got %v", s.Mode())
+	}
+
+	// 'e' opens the editor form even with zero collections.
+	cmd := s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	if cmd == nil {
+		t.Fatal("expected an OpenEditorMsg command from 'e'")
+	}
+	msg, ok := cmd().(OpenEditorMsg)
+	if !ok {
+		t.Fatalf("expected OpenEditorMsg, got %T", msg)
+	}
+	if msg.CollectionName != "" {
+		t.Fatalf("expected empty CollectionName for Adhoc edit, got %q", msg.CollectionName)
+	}
+
+	// Simulate the App applying the form save back to the shell.
+	s.SetAdhocRequest(httpfile.Request{Name: "Scratch", Method: "GET", URL: "https://example.com/scratch"})
+	if s.AdhocRequest().URL != "https://example.com/scratch" {
+		t.Fatalf("expected scratch request to be updated, got %+v", s.AdhocRequest())
+	}
+
+	// 'enter' sends the scratch request without any variable expansion.
+	sendCmd := s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if sendCmd == nil {
+		t.Fatal("expected a send command")
+	}
+	if !s.sending {
+		t.Fatal("expected sending=true")
+	}
+	result := sendCmd()
+	s.Update(result)
+
+	if len(s.history) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(s.history))
+	}
+	if s.history[0].CollectionName != "" {
+		t.Fatalf("expected empty CollectionName in history entry, got %q", s.history[0].CollectionName)
+	}
+	if s.history[0].Err != nil {
+		t.Fatalf("unexpected send error: %v", s.history[0].Err)
+	}
+}
+
+func TestShellAdhocSaveToExistingCollection(t *testing.T) {
+	s := newTestShell(t) // has collection "api" with 2 requests
+	s.SetAdhocRequest(httpfile.Request{Name: "Scratch", Method: "GET", URL: "https://example.com/scratch"})
+
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if s.overlay != overlaySaveAdhoc {
+		t.Fatalf("expected overlaySaveAdhoc, got %v", s.overlay)
+	}
+	s.saveIdx = 0 // "api" is the only collection
+
+	s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+
+	requests, err := s.colStore.LoadRequests("api")
+	if err != nil {
+		t.Fatalf("LoadRequests: %v", err)
+	}
+	if len(requests) != 3 || requests[2].URL != "https://example.com/scratch" {
+		t.Fatalf("expected scratch request appended to 'api', got %+v", requests)
+	}
+	if s.AdhocRequest().URL != "" {
+		t.Fatalf("expected scratch request reset after save, got %+v", s.AdhocRequest())
+	}
+}
+
+func TestShellAdhocSaveToNewCollection(t *testing.T) {
+	s := newTestShell(t)
+	s.SetAdhocRequest(httpfile.Request{Name: "Scratch", Method: "GET", URL: "https://example.com/scratch"})
+
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	s.saveIdx = len(s.collections) // the "+ new collection" entry
+	s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if s.overlay != overlayNewCollection {
+		t.Fatalf("expected overlayNewCollection, got %v", s.overlay)
+	}
+
+	for _, r := range "scratchpad" {
+		s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+
+	requests, err := s.colStore.LoadRequests("scratchpad")
+	if err != nil {
+		t.Fatalf("LoadRequests: %v", err)
+	}
+	if len(requests) != 1 || requests[0].URL != "https://example.com/scratch" {
+		t.Fatalf("expected scratch request saved as first request of new collection, got %+v", requests)
+	}
+}
+
+func TestShellAdhocSaveSwitchesToCollectionsMode(t *testing.T) {
+	s := newTestShell(t)
+	s.SetAdhocRequest(httpfile.Request{Name: "Scratch", Method: "GET", URL: "https://example.com/scratch"})
+
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	s.saveIdx = 0 // "api"
+	s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if s.Mode() != ModeCollections {
+		t.Fatalf("expected Collections mode after save, got %v", s.Mode())
+	}
+	if s.focus != PanelRequests {
+		t.Fatalf("expected focus on PanelRequests after save, got %v", s.focus)
+	}
+	if s.currentCollectionName() != "api" {
+		t.Fatalf("expected selected collection 'api', got %q", s.currentCollectionName())
+	}
+	if s.requestIdx != len(s.requests)-1 || s.requests[s.requestIdx].URL != "https://example.com/scratch" {
+		t.Fatalf("expected selected request to be the saved one, got idx=%d requests=%+v", s.requestIdx, s.requests)
+	}
+	if s.overlay != overlayNone {
+		t.Fatalf("expected overlay closed after save, got %v", s.overlay)
+	}
+}

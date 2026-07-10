@@ -5,10 +5,10 @@
 ## Requirements
 
 ### Requirement: パネルベースのレイアウト
-lazycurlはコレクション一覧・リクエスト一覧・レスポンスビューを常時表示するパネルレイアウトを提供しなければならない(SHALL)。
+lazycurlは`Collections`モードにおいて、コレクション一覧・リクエスト一覧・レスポンスビューを常時表示するパネルレイアウトを提供しなければならない(SHALL)。
 
-#### Scenario: 起動時のレイアウト表示
-- **WHEN** lazycurlを起動する
+#### Scenario: Collectionsモード表示時のレイアウト
+- **WHEN** ユーザーが`Collections`モードを表示する
 - **THEN** コレクション一覧パネル、選択中コレクションのリクエスト一覧パネル、レスポンス表示パネルが同時に表示される
 
 ### Requirement: lazygit互換キーバインド

@@ -108,10 +108,9 @@ func TestShellSendRequestWithUndefinedVariableBlocksSend(t *testing.T) {
 	s.focus = PanelRequests
 	s.requestIdx = 1 // "Get user" references {{host}}/{{id}}, no env active
 
-	cmd := s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd != nil {
-		t.Fatal("expected no command when variables are undefined")
-	}
+	// A command is still returned (the status-bar auto-clear timer), but no
+	// send/execution takes place.
+	s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if s.sending {
 		t.Error("should not be sending")
 	}
@@ -237,15 +236,44 @@ func TestShellDefaultsToAdhocMode(t *testing.T) {
 
 func TestShellModeSwitchAndPanelCycling(t *testing.T) {
 	s := newTestShell(t)
+	if s.focus != PanelEditor || !s.inFormZone() {
+		t.Fatalf("expected default focus PanelEditor (form zone), got focus=%v inFormZone=%v", s.focus, s.inFormZone())
+	}
+	if !s.editor.AtFirstFocus() {
+		t.Fatal("expected the embedded form to start at its first field (Name)")
+	}
 
+	// Tabbing through the whole form (Name -> Method -> URL -> content)
+	// exits forward to the next Shell panel once the form reaches its last
+	// zone; a bare tab before that just moves within the form.
+	s.handleKey(tea.KeyMsg{Type: tea.KeyTab}) // Name -> Method
+	s.handleKey(tea.KeyMsg{Type: tea.KeyTab}) // Method -> URL
+	s.handleKey(tea.KeyMsg{Type: tea.KeyTab}) // URL -> content
+	if s.focus != PanelEditor || !s.editor.AtLastFocus() {
+		t.Fatalf("expected to still be on PanelEditor at its last zone, got focus=%v", s.focus)
+	}
+	s.handleKey(tea.KeyMsg{Type: tea.KeyTab}) // content -> exits the form
+	if s.focus != PanelResponse {
+		t.Fatalf("expected tab from the form's last zone to exit to PanelResponse, got %v", s.focus)
+	}
+
+	// Mode toggling via '['/']' only works outside the form zone. Response
+	// is shared between both modes' panel sets, so focus doesn't move.
 	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
 	if s.Mode() != ModeCollections {
 		t.Fatalf("expected Collections mode after ']', got %v", s.Mode())
 	}
-	if s.focus != PanelCollections {
-		t.Fatalf("expected focus reset to PanelCollections, got %v", s.focus)
+	if s.focus != PanelResponse {
+		t.Fatalf("expected focus to remain on PanelResponse, got %v", s.focus)
 	}
 
+	// Jump to PanelCollections (not valid in Adhoc's panel set), then
+	// toggle back: this should reset focus to PanelEditor and reload the
+	// embedded form from the (unchanged) scratch request.
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
+	if s.focus != PanelCollections {
+		t.Fatalf("expected PanelCollections after '1', got %v", s.focus)
+	}
 	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("[")})
 	if s.Mode() != ModeAdhoc {
 		t.Fatalf("expected Adhoc mode after '[', got %v", s.Mode())
@@ -253,19 +281,8 @@ func TestShellModeSwitchAndPanelCycling(t *testing.T) {
 	if s.focus != PanelEditor {
 		t.Fatalf("expected focus reset to PanelEditor, got %v", s.focus)
 	}
-
-	// tab cycles only through Adhoc's 3 panels: Editor -> Response -> History -> Editor.
-	s.handleKey(tea.KeyMsg{Type: tea.KeyTab})
-	if s.focus != PanelResponse {
-		t.Fatalf("expected PanelResponse after tab, got %v", s.focus)
-	}
-	s.handleKey(tea.KeyMsg{Type: tea.KeyTab})
-	if s.focus != PanelHistory {
-		t.Fatalf("expected PanelHistory after tab, got %v", s.focus)
-	}
-	s.handleKey(tea.KeyMsg{Type: tea.KeyTab})
-	if s.focus != PanelEditor {
-		t.Fatalf("expected wrap back to PanelEditor, got %v", s.focus)
+	if !s.editor.AtFirstFocus() {
+		t.Fatal("expected the embedded form to reset to Name on re-entering PanelEditor")
 	}
 }
 
@@ -278,27 +295,26 @@ func TestShellAdhocEditAndSendWithoutCollection(t *testing.T) {
 		t.Fatalf("expected Adhoc mode, got %v", s.Mode())
 	}
 
-	// 'e' opens the editor form even with zero collections.
-	cmd := s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
-	if cmd == nil {
-		t.Fatal("expected an OpenEditorMsg command from 'e'")
+	// The Editor panel is always in its form zone -- there is no separate
+	// key to "enter" editing; typing directly edits the scratch request.
+	if !s.inFormZone() {
+		t.Fatal("expected Adhoc's Editor panel to always be in the form zone")
 	}
-	msg, ok := cmd().(OpenEditorMsg)
-	if !ok {
-		t.Fatalf("expected OpenEditorMsg, got %T", msg)
+	for _, r := range "Scratch" {
+		s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	if msg.CollectionName != "" {
-		t.Fatalf("expected empty CollectionName for Adhoc edit, got %q", msg.CollectionName)
+	s.handleKey(tea.KeyMsg{Type: tea.KeyTab}) // Name -> Method
+	s.handleKey(tea.KeyMsg{Type: tea.KeyTab}) // Method -> URL
+	for _, r := range "https://example.com/scratch" {
+		s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-
-	// Simulate the App applying the form save back to the shell.
-	s.SetAdhocRequest(httpfile.Request{Name: "Scratch", Method: "GET", URL: "https://example.com/scratch"})
 	if s.AdhocRequest().URL != "https://example.com/scratch" {
 		t.Fatalf("expected scratch request to be updated, got %+v", s.AdhocRequest())
 	}
 
-	// 'enter' sends the scratch request without any variable expansion.
-	sendCmd := s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	// ctrl+r sends the scratch request without any variable expansion
+	// ('enter' is reserved for in-field editing while the form has focus).
+	sendCmd := s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
 	if sendCmd == nil {
 		t.Fatal("expected a send command")
 	}
@@ -323,7 +339,7 @@ func TestShellAdhocSaveToExistingCollection(t *testing.T) {
 	s := newTestShell(t) // has collection "api" with 2 requests
 	s.SetAdhocRequest(httpfile.Request{Name: "Scratch", Method: "GET", URL: "https://example.com/scratch"})
 
-	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlS})
 	if s.overlay != overlaySaveAdhoc {
 		t.Fatalf("expected overlaySaveAdhoc, got %v", s.overlay)
 	}
@@ -347,7 +363,7 @@ func TestShellAdhocSaveToNewCollection(t *testing.T) {
 	s := newTestShell(t)
 	s.SetAdhocRequest(httpfile.Request{Name: "Scratch", Method: "GET", URL: "https://example.com/scratch"})
 
-	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlS})
 	s.saveIdx = len(s.collections) // the "+ new collection" entry
 	s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if s.overlay != overlayNewCollection {
@@ -368,11 +384,87 @@ func TestShellAdhocSaveToNewCollection(t *testing.T) {
 	}
 }
 
+// TestShellFormZoneProtectsTextInputFromGlobalShortcuts guards against a
+// regression where global shortcuts (q/s/[/]/digits/enter) would swallow
+// characters meant for the URL field instead of being typed literally, once
+// the Requests/Editor panel's form zone has focus.
+func TestShellFormZoneProtectsTextInputFromGlobalShortcuts(t *testing.T) {
+	s := newTestShell(t)
+	if !s.inFormZone() {
+		t.Fatal("expected Adhoc's Editor panel to start in the form zone")
+	}
+	s.handleKey(tea.KeyMsg{Type: tea.KeyTab}) // Name -> Method
+	s.handleKey(tea.KeyMsg{Type: tea.KeyTab}) // Method -> URL
+
+	for _, r := range "https://x.test/a[1]?q=1" {
+		s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	want := "https://x.test/a[1]?q=1"
+	if got := s.AdhocRequest().URL; got != want {
+		t.Fatalf("expected literal text typed into URL, got %q want %q", got, want)
+	}
+	if s.sending {
+		t.Fatal("'q'/'s' typed as text must not trigger quit/save side effects")
+	}
+	if s.overlay != overlayNone {
+		t.Fatalf("expected no overlay opened by typed text, got %v", s.overlay)
+	}
+}
+
+func TestShellFormZoneCtrlCStillCancelsQuit(t *testing.T) {
+	s := newTestShell(t)
+	if !s.inFormZone() {
+		t.Fatal("expected Adhoc's Editor panel to start in the form zone")
+	}
+	cmd := s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("expected ctrl+c to still produce a quit command from within the form zone")
+	}
+	if _, ok := cmd().(QuitMsg); !ok {
+		t.Fatal("expected ctrl+c to emit QuitMsg from within the form zone")
+	}
+}
+
+func TestShellSetStatusEmptyReturnsNoCommand(t *testing.T) {
+	s := newTestShell(t)
+	if cmd := s.setStatus(""); cmd != nil {
+		t.Fatal("expected nil command when clearing status directly")
+	}
+}
+
+func TestShellStatusMessageAutoClearByGeneration(t *testing.T) {
+	s := newTestShell(t)
+
+	cmd := s.setStatus("first error")
+	if cmd == nil {
+		t.Fatal("expected a clear-timer command for a non-empty status")
+	}
+	staleGen := s.statusGen
+
+	s.setStatus("second error")
+	if s.statusMsg != "second error" {
+		t.Fatalf("expected latest message, got %q", s.statusMsg)
+	}
+
+	// A stale clear from the first message's timer must not affect the
+	// newer message that replaced it.
+	s.Update(clearStatusMsg{gen: staleGen})
+	if s.statusMsg != "second error" {
+		t.Fatalf("stale clear should not affect current message, got %q", s.statusMsg)
+	}
+
+	// The current message's own clear should take effect.
+	s.Update(clearStatusMsg{gen: s.statusGen})
+	if s.statusMsg != "" {
+		t.Fatalf("expected statusMsg cleared, got %q", s.statusMsg)
+	}
+}
+
 func TestShellAdhocSaveSwitchesToCollectionsMode(t *testing.T) {
 	s := newTestShell(t)
 	s.SetAdhocRequest(httpfile.Request{Name: "Scratch", Method: "GET", URL: "https://example.com/scratch"})
 
-	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlS})
 	s.saveIdx = 0 // "api"
 	s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 

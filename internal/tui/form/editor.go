@@ -265,9 +265,14 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 			}
 			e.FocusNext()
 			return e, nil
-		case "1", "2", "3", "4":
+		case "[", "]":
 			if e.focus == focusContent && !e.isTypingSomewhere() {
-				e.SetTab(tab(msg.String()[0] - '1'))
+				n := tab(len(tabLabels))
+				if msg.String() == "]" {
+					e.SetTab((e.tab + 1) % n)
+				} else {
+					e.SetTab((e.tab - 1 + n) % n)
+				}
 				return e, nil
 			}
 		case "ctrl+e":
@@ -307,6 +312,21 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 
 func (e *Editor) editingAuthField() bool {
 	return e.tab == TabAuth && e.authField > 0
+}
+
+// AtFirstFocus reports whether the Name field currently has top-level
+// focus -- the first stop in the form's focus chain. Used by callers that
+// embed the form in a larger focus chain (e.g. a panel with its own list
+// zone before the form) to decide when shift+tab should exit the form.
+func (e Editor) AtFirstFocus() bool { return e.focus == focusName }
+
+// AtLastFocus reports whether the content zone (Params/Headers/Auth/Body)
+// currently has top-level focus and isn't itself mid-field-edit in a way
+// that still wants to consume tab (e.g. editing an Auth credential). Used
+// by callers to decide when tab should exit the form to whatever comes
+// after it, rather than wrapping back to Name.
+func (e Editor) AtLastFocus() bool {
+	return e.focus == focusContent && !e.editingAuthField()
 }
 
 func (e *Editor) isTypingSomewhere() bool {

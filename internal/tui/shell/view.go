@@ -76,6 +76,10 @@ func (s *Shell) viewCollectionsLayout() string {
 	topHeight := (s.height - modeBarHeight) * 2 / 3
 	bottomHeight := (s.height - modeBarHeight) - topHeight - 3 // leave room for status bar
 
+	if s.reqZone == zoneForm {
+		s.editor.SetSize(leftWidth-4, bottomHeight-4)
+	}
+
 	collectionsPanel := s.renderPanel(PanelCollections, leftWidth, topHeight, s.viewCollections())
 	requestsPanel := s.renderPanel(PanelRequests, leftWidth, bottomHeight, s.viewRequests())
 	left := lipgloss.JoinVertical(lipgloss.Left, collectionsPanel, requestsPanel)
@@ -96,37 +100,14 @@ func (s *Shell) viewAdhocLayout() string {
 	topHeight := fullHeight * 2 / 3
 	bottomHeight := fullHeight - topHeight
 
-	editorPanel := s.renderPanel(PanelEditor, leftWidth, fullHeight, s.viewAdhocEditor())
+	s.editor.SetSize(leftWidth-4, fullHeight-4)
+	editorPanel := s.renderPanel(PanelEditor, leftWidth, fullHeight, s.editor.View())
 
 	responsePanel := s.renderPanel(PanelResponse, rightWidth, topHeight, s.viewResponse())
 	historyPanel := s.renderPanel(PanelHistory, rightWidth, bottomHeight, s.viewHistory())
 	right := lipgloss.JoinVertical(lipgloss.Left, responsePanel, historyPanel)
 
 	return lipgloss.JoinHorizontal(lipgloss.Top, editorPanel, right)
-}
-
-func (s *Shell) viewAdhocEditor() string {
-	req := s.adhocRequest
-	method := req.Method
-	if method == "" {
-		method = "GET"
-	}
-	url := req.URL
-	if url == "" {
-		url = "(URLが未入力です)"
-	}
-
-	var b strings.Builder
-	b.WriteString(styles.MethodBadge(padMethod(method)) + " " + url + "\n\n")
-	b.WriteString(fmt.Sprintf("Headers: %d件\n", len(req.Headers)))
-	if req.Body != "" {
-		b.WriteString("Body: あり\n")
-	} else {
-		b.WriteString("Body: なし\n")
-	}
-	b.WriteString("\n")
-	b.WriteString(statusBarStyle.Render("e: 編集  enter: 送信  s: コレクションへ保存"))
-	return b.String()
 }
 
 func (s *Shell) viewSaveAdhoc() string {
@@ -183,6 +164,17 @@ func (s *Shell) viewRequests() string {
 	if len(s.requests) == 0 {
 		return "(リクエストがありません。'n' で新規作成)"
 	}
+
+	env := s.activeEnvName()
+	header := ""
+	if env != "" {
+		header = statusBarStyle.Render("env: "+env) + "\n"
+	}
+
+	if s.reqZone == zoneForm {
+		return header + s.viewRequestsAccordion()
+	}
+
 	var lines []string
 	for i, r := range s.requests {
 		var line string
@@ -193,12 +185,22 @@ func (s *Shell) viewRequests() string {
 		}
 		lines = append(lines, line)
 	}
-	env := s.activeEnvName()
-	header := ""
-	if env != "" {
-		header = statusBarStyle.Render("env: "+env) + "\n"
-	}
 	return header + strings.Join(lines, "\n")
+}
+
+// viewRequestsAccordion renders the Requests list with the selected row
+// expanded into the embedded editor form; other rows stay as one-line
+// summaries (Method + Name).
+func (s *Shell) viewRequestsAccordion() string {
+	var lines []string
+	for i, r := range s.requests {
+		if i == s.requestIdx {
+			lines = append(lines, s.editor.View())
+			continue
+		}
+		lines = append(lines, styles.MethodBadge(padMethod(r.Method))+" "+r.Name)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func padMethod(m string) string {
@@ -268,12 +270,20 @@ func (s *Shell) viewStatusBar() string {
 	if s.statusMsg != "" {
 		return errorStyle.Render(s.statusMsg)
 	}
-	if s.mode == ModeAdhoc {
-		return statusBarStyle.Render("[/]: モード切替  tab: 切替  enter: 送信  e: 編集  s: 保存  ?: ヘルプ  q: 終了")
+	if s.inFormZone() {
+		return statusBarStyle.Render("tab/shift+tab: 移動  [/]: セクション切替  ctrl+r: 送信  ctrl+s: 保存  ctrl+c: 終了")
 	}
-	return statusBarStyle.Render("[/]: モード切替  tab: 切替  j/k: 移動  enter: 送信/選択  n: 新規  e: 編集  ?: ヘルプ  q: 終了")
+	if s.mode == ModeAdhoc {
+		return statusBarStyle.Render("[/]: モード切替  tab: 切替  ?: ヘルプ  q: 終了")
+	}
+	return statusBarStyle.Render("[/]: モード切替  tab: 切替/編集開始  j/k: 移動  enter: 送信/選択  n: 新規  ?: ヘルプ  q: 終了")
 }
 
+// viewHelp renders the keybinding help overlay. Note that PanelEditor
+// (Adhoc) is always in the form zone, and '?' is swallowed as text input
+// while any part of the form has focus (see D6 in the design), so this
+// overlay can never actually be shown while s.focus == PanelEditor -- the
+// form-zone bindings are documented in a general note instead.
 func (s *Shell) viewHelp() string {
 	var lines []string
 	lines = append(lines, panelTitle.Render("キーバインド ("+panelLabels[s.focus]+")"))
@@ -292,8 +302,8 @@ func (s *Shell) viewHelp() string {
 		lines = append(lines, "E                 environment切り替え")
 	case PanelRequests:
 		lines = append(lines, "enter             リクエスト送信")
-		lines = append(lines, "e                 リクエスト編集")
-		lines = append(lines, "n                 新規リクエスト作成")
+		lines = append(lines, "tab               選択中リクエストを編集(フォームゾーンへ)")
+		lines = append(lines, "n                 新規リクエスト作成(即編集)")
 		lines = append(lines, "c                 複製")
 		lines = append(lines, "d/x               削除")
 		lines = append(lines, "E                 environment切り替え")
@@ -301,11 +311,9 @@ func (s *Shell) viewHelp() string {
 		lines = append(lines, "enter             選択した履歴をResponseパネルに表示")
 	case PanelResponse:
 		lines = append(lines, "(表示専用)")
-	case PanelEditor:
-		lines = append(lines, "enter             リクエスト送信")
-		lines = append(lines, "e                 リクエスト編集")
-		lines = append(lines, "s                 コレクションへ保存")
 	}
+	lines = append(lines, "")
+	lines = append(lines, "編集フォーム内: tab/shift+tab 移動  [/] セクション切替  ctrl+r 送信  ctrl+s 保存  ctrl+c 終了")
 	lines = append(lines, "")
 	lines = append(lines, "(閉じる: esc / ? / enter)")
 	return strings.Join(lines, "\n")

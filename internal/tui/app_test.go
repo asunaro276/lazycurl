@@ -48,8 +48,8 @@ func runKeys(t *testing.T, a *App, msgs ...tea.Msg) *App {
 
 // runKeyChase feeds a single message through Update and, if it returns a
 // command, runs it once and feeds the resulting message back in. Used only
-// at the specific points where Shell emits an async message (OpenEditorMsg,
-// a curl-execution result) that the real bubbletea runtime would deliver on
+// at the specific points where Shell emits an async message (a
+// curl-execution result) that the real bubbletea runtime would deliver on
 // the next loop iteration.
 func runKeyChase(t *testing.T, a *App, msg tea.Msg) *App {
 	t.Helper()
@@ -94,9 +94,15 @@ func TestPrimaryFlow(t *testing.T) {
 
 	app = runKeys(t, app, tea.WindowSizeMsg{Width: 120, Height: 40})
 
-	// lazycurl now starts in Adhoc mode; switch to Collections mode to
-	// exercise the collection-creation flow below.
-	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
+	// lazycurl now starts in Adhoc mode with the Editor panel already in
+	// its form zone; tab all the way through it (Name->Method->URL->
+	// content, then once more to exit) before using '['/']'/'1'-'4',
+	// which only work outside the form zone.
+	for range 4 {
+		app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyTab})
+	}
+	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")}) // -> Collections mode
+	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")}) // -> PanelCollections
 
 	// 1. Create collection "api".
 	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
@@ -110,13 +116,11 @@ func TestPrimaryFlow(t *testing.T) {
 	// reloadEnvironments happens on collection load, so the pre-seeded "dev"
 	// environment should now be visible.
 
-	// 2. Move focus to Requests panel and create a new request.
+	// 2. Move focus to Requests panel and create a new request inline: 'n'
+	// appends an empty request and immediately enters its form zone, no
+	// separate edit-mode transition required.
 	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyTab})
-	app = runKeyChase(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-
-	if app.mode != modeEditor {
-		t.Fatalf("expected editor mode after 'n', got %v", app.mode)
-	}
+	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 
 	// Fill in the request name, then move to URL and type it.
 	nameMsgs := runes("Ping")
@@ -126,11 +130,9 @@ func TestPrimaryFlow(t *testing.T) {
 	urlMsgs := runes("{{host}}/ping")
 	app = runKeys(t, app, urlMsgs...)
 
-	// Save.
+	// Save: ctrl+s writes the in-memory requests (already updated on every
+	// keystroke) to the collection's .http file.
 	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyCtrlS})
-	if app.mode != modeShell {
-		t.Fatalf("expected shell mode after save, got %v", app.mode)
-	}
 
 	requests, err := colStore.LoadRequests("api")
 	if err != nil {
@@ -139,6 +141,12 @@ func TestPrimaryFlow(t *testing.T) {
 	if len(requests) != 1 || requests[0].Name != "Ping" || requests[0].Method != "GET" || requests[0].URL != "{{host}}/ping" {
 		t.Fatalf("unexpected saved requests: %+v", requests)
 	}
+
+	// Exit the form back to the request list: 'E' (env switch) and the
+	// list's 'enter' (send) are list-zone-only bindings.
+	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyTab})      // URL -> content
+	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyTab})      // content -> exits to Response
+	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyShiftTab}) // Response -> back to Requests (list zone)
 
 	// 3. Switch active environment to "dev".
 	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("E")})
@@ -169,20 +177,21 @@ func TestPrimaryFlow(t *testing.T) {
 		t.Fatalf("expected expanded URL, got %q", history[0].Request.URL)
 	}
 
-	// 5. Confirm history is browsable.
-	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyTab}) // Requests -> Response
-	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyTab}) // Response -> History
+	// 5. Confirm history is browsable. Requests is in its list zone (a
+	// request is selected), so a bare tab would enter the form; jump via
+	// the numeric panel shortcuts instead.
+	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("4")}) // -> History
 	view := app.View()
 	if view == "" {
 		t.Fatal("expected non-empty view")
 	}
 }
 
-// TestAdhocOpenEditorMsgUpdatesScratchRequest exercises the Adhoc mode entry
-// point (task 7.5): opening the editor from Adhoc mode's Editor panel (empty
-// CollectionName) and saving must update the shell's in-memory scratch
-// request without touching the collection store.
-func TestAdhocOpenEditorMsgUpdatesScratchRequest(t *testing.T) {
+// TestAdhocInlineEditUpdatesScratchRequest exercises the Adhoc mode entry
+// point: the Editor panel's embedded form is always in its form zone (no
+// separate edit-mode transition), so typing immediately updates the shell's
+// in-memory scratch request without touching the collection store.
+func TestAdhocInlineEditUpdatesScratchRequest(t *testing.T) {
 	dir := t.TempDir()
 	colStore := collection.NewStore(filepath.Join(dir, "collections"))
 	envStore := environment.NewStore(filepath.Join(dir, "env"), filepath.Join(dir, "state.json"))
@@ -194,18 +203,10 @@ func TestAdhocOpenEditorMsgUpdatesScratchRequest(t *testing.T) {
 	}
 	app = runKeys(t, app, tea.WindowSizeMsg{Width: 120, Height: 40})
 
-	// App (and Shell) start in Adhoc mode by default.
+	// App (and Shell) start in Adhoc mode by default, with the Editor
+	// panel's form already focused at its first field (Name).
 	if app.shell.Mode() != shell.ModeAdhoc {
 		t.Fatalf("expected Adhoc mode by default, got %v", app.shell.Mode())
-	}
-
-	// 'e' on the Editor panel opens the form with an empty CollectionName.
-	app = runKeyChase(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
-	if app.mode != modeEditor {
-		t.Fatalf("expected editor mode after 'e', got %v", app.mode)
-	}
-	if app.editingCol != "" {
-		t.Fatalf("expected empty editingCol for Adhoc edit, got %q", app.editingCol)
 	}
 
 	nameMsgs := runes("Scratch")
@@ -214,11 +215,6 @@ func TestAdhocOpenEditorMsgUpdatesScratchRequest(t *testing.T) {
 	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyTab}) // Method -> URL
 	urlMsgs := runes("https://example.com/scratch")
 	app = runKeys(t, app, urlMsgs...)
-
-	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyCtrlS})
-	if app.mode != modeShell {
-		t.Fatalf("expected shell mode after save, got %v", app.mode)
-	}
 
 	req := app.shell.AdhocRequest()
 	if req.Name != "Scratch" || req.URL != "https://example.com/scratch" {

@@ -207,3 +207,181 @@ func TestShellEnvSwitching(t *testing.T) {
 		t.Fatalf("expected successful send, history=%+v", s.history)
 	}
 }
+
+func TestShellDefaultsToAdhocMode(t *testing.T) {
+	s := newTestShell(t)
+	if s.Mode() != ModeAdhoc {
+		t.Fatalf("expected default mode ModeAdhoc, got %v", s.Mode())
+	}
+	if s.focus != PanelEdit {
+		t.Fatalf("expected default focus PanelEdit, got %v", s.focus)
+	}
+}
+
+func TestShellModeToggle(t *testing.T) {
+	s := newTestShell(t)
+
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
+	if s.Mode() != ModeCollections {
+		t.Fatalf("expected ModeCollections after ']', got %v", s.Mode())
+	}
+	if s.focus != PanelCollections {
+		t.Fatalf("expected focus reset to PanelCollections, got %v", s.focus)
+	}
+
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("[")})
+	if s.Mode() != ModeAdhoc {
+		t.Fatalf("expected ModeAdhoc after '[', got %v", s.Mode())
+	}
+	if s.focus != PanelEdit {
+		t.Fatalf("expected focus reset to PanelEdit, got %v", s.focus)
+	}
+}
+
+func TestShellAdhocEditAndSendWithoutCollection(t *testing.T) {
+	dir := t.TempDir()
+	colStore := collection.NewStore(filepath.Join(dir, "collections"))
+	envStore := environment.NewStore(filepath.Join(dir, "env"), filepath.Join(dir, "state.json"))
+	executor := curlexec.NewExecutorWithRunner(&stubRunner{statusCode: 200, body: "adhoc ok"})
+
+	s, err := New(colStore, envStore, executor)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s.SetSize(120, 40)
+
+	if len(s.Collections()) != 0 {
+		t.Fatalf("expected no collections, got %+v", s.Collections())
+	}
+	if s.Mode() != ModeAdhoc || s.focus != PanelEdit {
+		t.Fatalf("expected Adhoc mode with PanelEdit focus at startup")
+	}
+
+	// Opening the edit form should work even with zero collections.
+	cmd := s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	if cmd == nil {
+		t.Fatal("expected OpenEditorMsg command from 'e'")
+	}
+	msg := cmd()
+	openMsg, ok := msg.(OpenEditorMsg)
+	if !ok {
+		t.Fatalf("expected OpenEditorMsg, got %T", msg)
+	}
+	if openMsg.CollectionName != "" {
+		t.Fatalf("expected empty CollectionName for Adhoc edit, got %q", openMsg.CollectionName)
+	}
+
+	// Simulate the App updating the scratch request after a form save.
+	s.UpdateAdhocRequest(httpfile.Request{Name: "Adhoc ping", Method: "GET", URL: "https://example.com/ping"})
+
+	sendCmd := s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if sendCmd == nil {
+		t.Fatal("expected send command from 'enter' on PanelEdit")
+	}
+	if !s.sending {
+		t.Fatal("expected sending=true")
+	}
+	result := sendCmd()
+	s.Update(result)
+
+	if s.sending {
+		t.Error("expected sending=false after result")
+	}
+	if len(s.history) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(s.history))
+	}
+	if s.history[0].CollectionName != "" {
+		t.Fatalf("expected empty CollectionName in adhoc history entry, got %q", s.history[0].CollectionName)
+	}
+	if s.history[0].Err != nil {
+		t.Fatalf("unexpected error: %v", s.history[0].Err)
+	}
+}
+
+func TestShellAdhocSaveToExistingCollection(t *testing.T) {
+	s := newTestShell(t)
+	s.UpdateAdhocRequest(httpfile.Request{Name: "New adhoc request", Method: "GET", URL: "https://example.com/new"})
+
+	// 's' should be usable from any Adhoc panel, not just PanelEdit.
+	s.focus = PanelResponse
+	cmd := s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if cmd != nil {
+		t.Fatal("expected no command from 's', overlay handles the flow synchronously")
+	}
+	if s.overlay != overlaySaveTarget {
+		t.Fatalf("expected overlaySaveTarget, got %v", s.overlay)
+	}
+
+	// index 0 = "new collection", index 1 = existing "api" collection.
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if s.saveOverlayIdx != 1 {
+		t.Fatalf("expected saveOverlayIdx 1, got %d", s.saveOverlayIdx)
+	}
+	s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if s.overlay != overlayNone {
+		t.Fatalf("expected overlay closed after save, got %v", s.overlay)
+	}
+	if s.Mode() != ModeCollections {
+		t.Fatalf("expected ModeCollections after save, got %v", s.Mode())
+	}
+	if s.focus != PanelRequests {
+		t.Fatalf("expected focus PanelRequests after save, got %v", s.focus)
+	}
+	if s.currentCollectionName() != "api" {
+		t.Fatalf("expected 'api' collection selected, got %q", s.currentCollectionName())
+	}
+	if len(s.requests) != 3 || s.requests[s.requestIdx].Name != "New adhoc request" {
+		t.Fatalf("expected saved request selected, requests=%+v idx=%d", s.requests, s.requestIdx)
+	}
+
+	saved, err := s.colStore.LoadRequests("api")
+	if err != nil {
+		t.Fatalf("LoadRequests: %v", err)
+	}
+	if len(saved) != 3 || saved[2].Name != "New adhoc request" {
+		t.Fatalf("expected request appended to disk, got %+v", saved)
+	}
+}
+
+func TestShellAdhocSaveToNewCollection(t *testing.T) {
+	s := newTestShell(t)
+	s.UpdateAdhocRequest(httpfile.Request{Name: "Fresh request", Method: "POST", URL: "https://example.com/create"})
+
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if s.overlay != overlaySaveTarget {
+		t.Fatalf("expected overlaySaveTarget, got %v", s.overlay)
+	}
+
+	// index 0 ("+ new collection") is selected by default.
+	s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if s.overlay != overlayNewCollection {
+		t.Fatalf("expected overlayNewCollection, got %v", s.overlay)
+	}
+
+	for _, r := range "web" {
+		s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if s.overlay != overlayNone {
+		t.Fatalf("expected overlay closed after save, got %v", s.overlay)
+	}
+	if s.Mode() != ModeCollections {
+		t.Fatalf("expected ModeCollections after save, got %v", s.Mode())
+	}
+	if s.currentCollectionName() != "web" {
+		t.Fatalf("expected new 'web' collection selected, got %q", s.currentCollectionName())
+	}
+	if len(s.requests) != 1 || s.requests[0].Name != "Fresh request" {
+		t.Fatalf("expected the adhoc request saved as the first request, got %+v", s.requests)
+	}
+
+	saved, err := s.colStore.LoadRequests("web")
+	if err != nil {
+		t.Fatalf("LoadRequests: %v", err)
+	}
+	if len(saved) != 1 || saved[0].Name != "Fresh request" {
+		t.Fatalf("expected request saved to new collection file, got %+v", saved)
+	}
+}

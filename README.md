@@ -33,12 +33,22 @@ curl --version
 lazycurl
 ```
 
+### モード: Adhoc / Collections
+
+lazycurlは`Adhoc`と`Collections`の2つのモードを持ち、`[`/`]`キーでいつでも切り替えられます。起動直後は`Adhoc`モードになり、コレクションを作らなくてもその場でリクエストを組み立てて送信できます。
+
+- **Adhoc**モード: リクエスト編集フォーム・Response・Historyの3パネル。組み立てたリクエストは保存するまでメモリ内にのみ存在し(environment変数の展開も行われません)、`s`キーでいつでも既存/新規コレクションへ保存できます。保存すると自動的に`Collections`モードへ切り替わり、保存先が選択された状態になります。
+- **Collections**モード: 従来通りのCollections/Requests/Response/Historyの4パネル。
+
+実行履歴(History)は両モードで共有されます。
+
 ### キーバインド(lazygit互換)
 
 | キー | 動作 |
 | --- | --- |
+| `[` / `]` | Adhoc/Collectionsモードの切り替え |
 | `tab` / `shift+tab` | パネル間移動 |
-| `1`-`4` | パネルへジャンプ(Collections/Requests/Response/History) |
+| `1`-`4` | パネルへジャンプ(モードごとのパネル構成に応じる) |
 | `j` / `k` | 上下移動 |
 | `enter` | 選択項目を送信・確定 |
 | `n` | 新規作成(コレクション/リクエスト) |
@@ -46,6 +56,7 @@ lazycurl
 | `c` | リクエストの複製 |
 | `d` / `x` | リクエストの削除 |
 | `E` | environmentの切り替え |
+| `s` | (Adhocモードのみ)組み立てたリクエストをコレクションへ保存 |
 | `?` | ヘルプ表示 |
 | `q` / `ctrl-c` | 終了(送信中は中断) |
 
@@ -90,3 +101,5 @@ Authorization: Bearer {{token}}
 ## environmentと変数展開
 
 `{{variable}}` はアクティブなenvironment(`env/<collection>/<name>.env.json`)の値で展開されてから `curl` に渡されます。未定義の変数を参照している場合、送信前にエラーとして表示され、送信は行われません。
+
+`Adhoc`モードはコレクションに紐づかないため、environment変数の展開は行われません(入力した値がそのまま送信されます)。コレクションへ保存すれば、以降はそのコレクションのenvironmentが適用されます。

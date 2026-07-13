@@ -110,6 +110,10 @@ func (a *App) updateEditor(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (a *App) saveEditor() error {
 	req := a.editor.ToRequest()
+	if a.editingCol == "" {
+		a.shell.UpdateAdhocRequest(req)
+		return nil
+	}
 	requests, err := a.colStore.LoadRequests(a.editingCol)
 	if err != nil {
 		return err

@@ -18,31 +18,27 @@ var (
 	overlayBox           = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1, 2)
 	statusBarStyle       = lipgloss.NewStyle().Faint(true)
 	errorStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+	modeTabActive        = lipgloss.NewStyle().Bold(true).Reverse(true).Padding(0, 1)
+	modeTabInactive      = lipgloss.NewStyle().Faint(true).Padding(0, 1)
 )
 
-// View renders the full shell: four panels plus a status bar, with any
-// active overlay drawn on top.
+// View renders the full shell: a mode-tab header, that mode's panel
+// layout, and a status bar, with any active overlay drawn on top.
 func (s *Shell) View() string {
 	if s.width == 0 {
 		return "loading..."
 	}
 
-	leftWidth := s.width / 4
-	rightWidth := s.width - leftWidth - 1
-	topHeight := s.height * 2 / 3
-	bottomHeight := s.height - topHeight - 3 // leave room for status bar
+	header := s.viewModeTabs()
 
-	collectionsPanel := s.renderPanel(PanelCollections, leftWidth, topHeight, s.viewCollections())
-	requestsPanel := s.renderPanel(PanelRequests, leftWidth, bottomHeight, s.viewRequests())
-	left := lipgloss.JoinVertical(lipgloss.Left, collectionsPanel, requestsPanel)
+	var body string
+	if s.mode == ModeAdhoc {
+		body = s.viewAdhocBody()
+	} else {
+		body = s.viewCollectionsBody()
+	}
 
-	responsePanel := s.renderPanel(PanelResponse, rightWidth, topHeight, s.viewResponse())
-	historyPanel := s.renderPanel(PanelHistory, rightWidth, bottomHeight, s.viewHistory())
-	right := lipgloss.JoinVertical(lipgloss.Left, responsePanel, historyPanel)
-
-	body := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
-
-	main := lipgloss.JoinVertical(lipgloss.Left, body, s.viewStatusBar())
+	main := lipgloss.JoinVertical(lipgloss.Left, header, body, s.viewStatusBar())
 
 	switch s.overlay {
 	case overlayHelp:
@@ -53,8 +49,65 @@ func (s *Shell) View() string {
 		return overlayBox.Render("新規コレクション名:\n\n> " + s.input + "_")
 	case overlayConfirmDelete:
 		return overlayBox.Render(fmt.Sprintf("リクエスト %q を削除しますか? (y/n)", s.currentRequestName()))
+	case overlaySaveTarget:
+		return overlayBox.Render(s.viewSaveTarget())
 	}
 	return main
+}
+
+// viewModeTabs renders the Adhoc/Collections mode indicator, highlighting
+// whichever mode is currently active.
+func (s *Shell) viewModeTabs() string {
+	adhoc, collections := "Adhoc", "Collections"
+	if s.mode == ModeAdhoc {
+		adhoc = modeTabActive.Render(adhoc)
+		collections = modeTabInactive.Render(collections)
+	} else {
+		adhoc = modeTabInactive.Render(adhoc)
+		collections = modeTabActive.Render(collections)
+	}
+	return adhoc + " " + collections
+}
+
+// layoutDims computes the shared panel dimensions used by both the Adhoc
+// and Collections body layouts.
+func (s *Shell) layoutDims() (leftWidth, rightWidth, topHeight, bottomHeight int) {
+	leftWidth = s.width / 4
+	rightWidth = s.width - leftWidth - 1
+	bodyHeight := s.height - 1 // mode-tab header line
+	topHeight = bodyHeight * 2 / 3
+	bottomHeight = bodyHeight - topHeight - 3 // leave room for status bar
+	return leftWidth, rightWidth, topHeight, bottomHeight
+}
+
+// viewCollectionsBody renders the Collections mode's four-panel layout:
+// Collections/Requests on the left, Response/History on the right.
+func (s *Shell) viewCollectionsBody() string {
+	leftWidth, rightWidth, topHeight, bottomHeight := s.layoutDims()
+
+	collectionsPanel := s.renderPanel(PanelCollections, leftWidth, topHeight, s.viewCollections())
+	requestsPanel := s.renderPanel(PanelRequests, leftWidth, bottomHeight, s.viewRequests())
+	left := lipgloss.JoinVertical(lipgloss.Left, collectionsPanel, requestsPanel)
+
+	responsePanel := s.renderPanel(PanelResponse, rightWidth, topHeight, s.viewResponse())
+	historyPanel := s.renderPanel(PanelHistory, rightWidth, bottomHeight, s.viewHistory())
+	right := lipgloss.JoinVertical(lipgloss.Left, responsePanel, historyPanel)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+}
+
+// viewAdhocBody renders the Adhoc mode's three-panel layout: the scratch
+// request edit pane on the left, Response/History on the right.
+func (s *Shell) viewAdhocBody() string {
+	leftWidth, rightWidth, topHeight, bottomHeight := s.layoutDims()
+
+	editPanel := s.renderPanel(PanelEdit, leftWidth, topHeight+bottomHeight, s.viewAdhocEdit())
+
+	responsePanel := s.renderPanel(PanelResponse, rightWidth, topHeight, s.viewResponse())
+	historyPanel := s.renderPanel(PanelHistory, rightWidth, bottomHeight, s.viewHistory())
+	right := lipgloss.JoinVertical(lipgloss.Left, responsePanel, historyPanel)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, editPanel, right)
 }
 
 func (s *Shell) currentRequestName() string {
@@ -174,24 +227,64 @@ func (s *Shell) viewHistory() string {
 	return strings.Join(lines, "\n")
 }
 
+func (s *Shell) viewAdhocEdit() string {
+	r := s.adhocRequest
+	var b strings.Builder
+	b.WriteString(styles.MethodBadge(padMethod(r.Method)) + " " + r.URL + "\n")
+	if r.Name != "" {
+		b.WriteString("\nName: " + r.Name)
+	}
+	b.WriteString(fmt.Sprintf("\nHeaders: %d", len(r.Headers)))
+	if r.Body != "" {
+		b.WriteString(fmt.Sprintf("\nBody: %d bytes", len(r.Body)))
+	}
+	b.WriteString("\n\n" + statusBarStyle.Render("e: 編集  enter: 送信  s: コレクションへ保存"))
+	return b.String()
+}
+
+func (s *Shell) viewSaveTarget() string {
+	var b strings.Builder
+	b.WriteString(panelTitle.Render("保存先を選択") + "\n\n")
+	newLabel := "+ 新規コレクションを作成"
+	if s.saveOverlayIdx == 0 {
+		newLabel = listSelected.Render(newLabel)
+	}
+	b.WriteString(newLabel + "\n")
+	for i, c := range s.collections {
+		line := c.Name
+		if s.saveOverlayIdx == i+1 {
+			line = listSelected.Render(line)
+		}
+		b.WriteString(line + "\n")
+	}
+	return b.String()
+}
+
 func (s *Shell) viewStatusBar() string {
 	if s.statusMsg != "" {
 		return errorStyle.Render(s.statusMsg)
 	}
-	return statusBarStyle.Render("tab: 切替  j/k: 移動  enter: 送信/選択  n: 新規  e: 編集  ?: ヘルプ  q: 終了")
+	if s.mode == ModeAdhoc {
+		return statusBarStyle.Render("[/]: モード切替  tab: 切替  j/k: 移動  enter: 送信  e: 編集  s: 保存  ?: ヘルプ  q: 終了")
+	}
+	return statusBarStyle.Render("[/]: モード切替  tab: 切替  j/k: 移動  enter: 送信/選択  n: 新規  e: 編集  ?: ヘルプ  q: 終了")
 }
 
 func (s *Shell) viewHelp() string {
 	var lines []string
 	lines = append(lines, panelTitle.Render("キーバインド ("+panelLabels[s.focus]+")"))
 	lines = append(lines, "")
+	lines = append(lines, "[ / ]             モード切替 (Adhoc ⇄ Collections)")
 	lines = append(lines, "tab / shift+tab   パネル間移動")
-	lines = append(lines, "1-4               パネルへジャンプ")
 	lines = append(lines, "j/k               上下移動")
 	lines = append(lines, "?                 このヘルプ")
 	lines = append(lines, "q / ctrl-c        終了")
 	lines = append(lines, "")
 	switch s.focus {
+	case PanelEdit:
+		lines = append(lines, "e / n             リクエスト編集")
+		lines = append(lines, "enter             リクエスト送信")
+		lines = append(lines, "s                 コレクションへ保存")
 	case PanelCollections:
 		lines = append(lines, "enter             リクエスト一覧へ")
 		lines = append(lines, "n                 新規コレクション作成")

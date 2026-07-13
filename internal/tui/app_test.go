@@ -11,6 +11,7 @@ import (
 	"github.com/asunaro276/lazycurl/internal/collection"
 	"github.com/asunaro276/lazycurl/internal/curlexec"
 	"github.com/asunaro276/lazycurl/internal/environment"
+	"github.com/asunaro276/lazycurl/internal/tui/shell"
 )
 
 // stubRunner fakes curl execution for the end-to-end flow test, avoiding a
@@ -93,6 +94,10 @@ func TestPrimaryFlow(t *testing.T) {
 
 	app = runKeys(t, app, tea.WindowSizeMsg{Width: 120, Height: 40})
 
+	// lazycurl now starts in Adhoc mode; switch to Collections mode for this
+	// collection-first flow.
+	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
+
 	// 1. Create collection "api".
 	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	msgs := runes("api")
@@ -170,5 +175,63 @@ func TestPrimaryFlow(t *testing.T) {
 	view := app.View()
 	if view == "" {
 		t.Fatal("expected non-empty view")
+	}
+}
+
+// TestAdhocOpenEditorMsgSkipsCollectionPersistence exercises the App's
+// OpenEditorMsg/save path when it originates from Adhoc mode (empty
+// CollectionName): saving must not touch the collection store and must
+// instead update the shell's in-memory scratch request.
+func TestAdhocOpenEditorMsgSkipsCollectionPersistence(t *testing.T) {
+	dir := t.TempDir()
+	colStore := collection.NewStore(filepath.Join(dir, "collections"))
+	envStore := environment.NewStore(filepath.Join(dir, "env"), filepath.Join(dir, "state.json"))
+	executor := curlexec.NewExecutorWithRunner(stubRunner{})
+
+	app, err := New(colStore, envStore, executor)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	app = runKeys(t, app, tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	if app.shell.Mode() != shell.ModeAdhoc {
+		t.Fatalf("expected default ModeAdhoc, got %v", app.shell.Mode())
+	}
+
+	// 'e' on the Adhoc edit pane opens the form via OpenEditorMsg with an
+	// empty CollectionName.
+	app = runKeyChase(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	if app.mode != modeEditor {
+		t.Fatalf("expected editor mode after 'e', got %v", app.mode)
+	}
+	if app.editingCol != "" {
+		t.Fatalf("expected empty editingCol for Adhoc, got %q", app.editingCol)
+	}
+
+	nameMsgs := runes("Adhoc draft")
+	app = runKeys(t, app, nameMsgs...)
+	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyTab}) // Name -> Method
+	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyTab}) // Method -> URL
+	urlMsgs := runes("https://example.invalid/draft")
+	app = runKeys(t, app, urlMsgs...)
+
+	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyCtrlS})
+	if app.mode != modeShell {
+		t.Fatalf("expected shell mode after save, got %v", app.mode)
+	}
+
+	// No collections should have been created or written to disk.
+	collections, err := colStore.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(collections) != 0 {
+		t.Fatalf("expected no collections created by Adhoc save, got %+v", collections)
+	}
+
+	// The shell's in-memory scratch request should carry the edited values.
+	adhoc := app.shell.AdhocRequest()
+	if adhoc.Name != "Adhoc draft" || adhoc.URL != "https://example.invalid/draft" {
+		t.Fatalf("unexpected adhoc scratch request: %+v", adhoc)
 	}
 }

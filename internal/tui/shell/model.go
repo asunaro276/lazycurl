@@ -15,7 +15,7 @@ import (
 	"github.com/asunaro276/lazycurl/internal/httpfile"
 )
 
-// Panel identifies one of the shell's four navigable panels.
+// Panel identifies one of the shell's navigable panels.
 type Panel int
 
 const (
@@ -23,6 +23,7 @@ const (
 	PanelRequests
 	PanelResponse
 	PanelHistory
+	PanelEdit // Adhoc mode only: the scratch request edit pane
 )
 
 var panelLabels = map[Panel]string{
@@ -30,7 +31,16 @@ var panelLabels = map[Panel]string{
 	PanelRequests:    "Requests",
 	PanelResponse:    "Response",
 	PanelHistory:     "History",
+	PanelEdit:        "Request",
 }
+
+// Mode identifies which top-level UI mode the shell is displaying.
+type Mode int
+
+const (
+	ModeAdhoc Mode = iota
+	ModeCollections
+)
 
 // HistoryEntry records one executed request/response pair.
 type HistoryEntry struct {
@@ -50,6 +60,7 @@ const (
 	overlayEnvSelect
 	overlayNewCollection
 	overlayConfirmDelete
+	overlaySaveTarget
 )
 
 // OpenEditorMsg is emitted by Shell when the user requests creating or
@@ -83,9 +94,15 @@ type Shell struct {
 	envNames []string
 	envIdx   int
 
+	mode         Mode
+	adhocRequest httpfile.Request // Adhoc mode's in-memory scratch request
+
 	focus   Panel
 	overlay overlay
 	input   string // scratch text input for name-prompt overlays
+
+	saveOverlayIdx   int  // selection index within overlaySaveTarget
+	pendingAdhocSave bool // true while overlayNewCollection is being used to pick an Adhoc save target
 
 	sending    bool
 	cancelSend context.CancelFunc
@@ -98,11 +115,13 @@ type Shell struct {
 // New constructs a Shell and loads the initial collection list.
 func New(colStore *collection.Store, envStore *environment.Store, executor *curlexec.Executor) (*Shell, error) {
 	s := &Shell{
-		colStore:   colStore,
-		envStore:   envStore,
-		executor:   executor,
-		focus:      PanelCollections,
-		viewingIdx: -1,
+		colStore:     colStore,
+		envStore:     envStore,
+		executor:     executor,
+		mode:         ModeAdhoc,
+		adhocRequest: httpfile.Request{Method: "GET"},
+		focus:        PanelEdit,
+		viewingIdx:   -1,
 	}
 	if err := s.reloadCollections(); err != nil {
 		return nil, err
@@ -200,6 +219,18 @@ func (s *Shell) Requests() []httpfile.Request { return s.requests }
 
 // History returns the executed request/response history, oldest first.
 func (s *Shell) History() []HistoryEntry { return s.history }
+
+// Mode returns the shell's current top-level UI mode.
+func (s *Shell) Mode() Mode { return s.mode }
+
+// AdhocRequest returns the current in-memory Adhoc scratch request.
+func (s *Shell) AdhocRequest() httpfile.Request { return s.adhocRequest }
+
+// UpdateAdhocRequest replaces the in-memory Adhoc scratch request. Called by
+// the parent App after a form save when editing outside any collection.
+func (s *Shell) UpdateAdhocRequest(req httpfile.Request) {
+	s.adhocRequest = req
+}
 
 // ReloadCurrentCollection re-reads the selected collection's requests from
 // disk. Called by the parent App after a form save changes the underlying

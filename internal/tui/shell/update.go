@@ -58,23 +58,32 @@ func (s *Shell) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case "?":
 		s.overlay = overlayHelp
 		return nil
+	case "[", "]":
+		s.toggleMode()
+		return nil
+	case "s":
+		if s.mode == ModeAdhoc {
+			s.overlay = overlaySaveTarget
+			s.saveOverlayIdx = 0
+			return nil
+		}
 	case "tab":
-		s.focus = Panel((int(s.focus) + 1) % 4)
+		s.cycleFocus(1)
 		return nil
 	case "shift+tab":
-		s.focus = Panel((int(s.focus) + 3) % 4)
+		s.cycleFocus(-1)
 		return nil
 	case "1":
-		s.focus = PanelCollections
+		s.jumpFocus(0)
 		return nil
 	case "2":
-		s.focus = PanelRequests
+		s.jumpFocus(1)
 		return nil
 	case "3":
-		s.focus = PanelResponse
+		s.jumpFocus(2)
 		return nil
 	case "4":
-		s.focus = PanelHistory
+		s.jumpFocus(3)
 		return nil
 	}
 
@@ -87,8 +96,52 @@ func (s *Shell) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return s.handleHistoryKey(msg)
 	case PanelResponse:
 		return s.handleResponseKey(msg)
+	case PanelEdit:
+		return s.handleEditKey(msg)
 	}
 	return nil
+}
+
+// panelsForMode returns the ordered list of panels navigable in the current
+// mode, used for tab-cycling and numeric jump keys.
+func (s *Shell) panelsForMode() []Panel {
+	if s.mode == ModeAdhoc {
+		return []Panel{PanelEdit, PanelResponse, PanelHistory}
+	}
+	return []Panel{PanelCollections, PanelRequests, PanelResponse, PanelHistory}
+}
+
+func (s *Shell) cycleFocus(delta int) {
+	panels := s.panelsForMode()
+	idx := 0
+	for i, p := range panels {
+		if p == s.focus {
+			idx = i
+			break
+		}
+	}
+	idx = (idx + delta + len(panels)) % len(panels)
+	s.focus = panels[idx]
+}
+
+func (s *Shell) jumpFocus(i int) {
+	panels := s.panelsForMode()
+	if i >= 0 && i < len(panels) {
+		s.focus = panels[i]
+	}
+}
+
+// toggleMode switches between Adhoc and Collections mode, resetting focus
+// to the new mode's first panel and closing any open overlay.
+func (s *Shell) toggleMode() {
+	if s.mode == ModeAdhoc {
+		s.mode = ModeCollections
+		s.focus = PanelCollections
+	} else {
+		s.mode = ModeAdhoc
+		s.focus = PanelEdit
+	}
+	s.overlay = overlayNone
 }
 
 func (s *Shell) handleCollectionsKey(msg tea.KeyMsg) tea.Cmd {
@@ -197,6 +250,22 @@ func (s *Shell) handleResponseKey(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
+// handleEditKey handles input on the Adhoc mode's edit pane: opening the
+// full request-editor form and sending the scratch request. Unlike
+// PanelRequests, no collection is required.
+func (s *Shell) handleEditKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "e", "n":
+		req := s.adhocRequest
+		return func() tea.Msg {
+			return OpenEditorMsg{CollectionName: "", Request: req, Index: -1}
+		}
+	case "enter":
+		return s.sendAdhoc()
+	}
+	return nil
+}
+
 func (s *Shell) handleOverlayKey(msg tea.KeyMsg) tea.Cmd {
 	switch s.overlay {
 	case overlayHelp:
@@ -233,21 +302,33 @@ func (s *Shell) handleOverlayKey(msg tea.KeyMsg) tea.Cmd {
 		switch msg.String() {
 		case "esc":
 			s.overlay = overlayNone
+			s.pendingAdhocSave = false
 		case "enter":
 			name := strings.TrimSpace(s.input)
-			if name != "" {
-				if err := s.colStore.CreateCollection(name); err != nil {
-					s.statusMsg = err.Error()
-				} else if err := s.reloadCollections(); err != nil {
-					s.statusMsg = err.Error()
-				} else {
-					for i, c := range s.collections {
-						if c.Name == name {
-							s.collectionIdx = i
-						}
+			if name == "" {
+				s.overlay = overlayNone
+				return nil
+			}
+			if err := s.colStore.CreateCollection(name); err != nil {
+				s.statusMsg = err.Error()
+				s.overlay = overlayNone
+				s.pendingAdhocSave = false
+				return nil
+			}
+			if s.pendingAdhocSave {
+				s.pendingAdhocSave = false
+				s.finishAdhocSave(name)
+				return nil
+			}
+			if err := s.reloadCollections(); err != nil {
+				s.statusMsg = err.Error()
+			} else {
+				for i, c := range s.collections {
+					if c.Name == name {
+						s.collectionIdx = i
 					}
-					_ = s.loadRequestsForCurrentCollection()
 				}
+				_ = s.loadRequestsForCurrentCollection()
 			}
 			s.overlay = overlayNone
 		case "backspace":
@@ -274,8 +355,70 @@ func (s *Shell) handleOverlayKey(msg tea.KeyMsg) tea.Cmd {
 			s.overlay = overlayNone
 		}
 		return nil
+
+	case overlaySaveTarget:
+		switch msg.String() {
+		case "esc", "q":
+			s.overlay = overlayNone
+		case "j", "down":
+			if s.saveOverlayIdx < len(s.collections) {
+				s.saveOverlayIdx++
+			}
+		case "k", "up":
+			if s.saveOverlayIdx > 0 {
+				s.saveOverlayIdx--
+			}
+		case "enter":
+			if s.saveOverlayIdx == 0 {
+				s.overlay = overlayNewCollection
+				s.input = ""
+				s.pendingAdhocSave = true
+				return nil
+			}
+			idx := s.saveOverlayIdx - 1
+			if idx >= 0 && idx < len(s.collections) {
+				s.finishAdhocSave(s.collections[idx].Name)
+			}
+		}
+		return nil
 	}
 	return nil
+}
+
+// finishAdhocSave appends the Adhoc scratch request to the named
+// collection's .http file (creating/reloading state as needed), then
+// switches the shell into Collections mode with the saved collection and
+// request selected, and resets the scratch buffer.
+func (s *Shell) finishAdhocSave(name string) {
+	reqs, err := s.colStore.LoadRequests(name)
+	if err != nil {
+		s.statusMsg = err.Error()
+		return
+	}
+	reqs = append(reqs, s.adhocRequest)
+	if err := s.colStore.SaveRequests(name, reqs); err != nil {
+		s.statusMsg = err.Error()
+		return
+	}
+	if err := s.reloadCollections(); err != nil {
+		s.statusMsg = err.Error()
+		return
+	}
+	for i, c := range s.collections {
+		if c.Name == name {
+			s.collectionIdx = i
+			break
+		}
+	}
+	if err := s.loadRequestsForCurrentCollection(); err != nil {
+		s.statusMsg = err.Error()
+		return
+	}
+	s.requestIdx = max0(len(s.requests) - 1)
+	s.adhocRequest = httpfile.Request{Method: "GET"}
+	s.mode = ModeCollections
+	s.focus = PanelRequests
+	s.overlay = overlayNone
 }
 
 func (s *Shell) cancel() {
@@ -320,6 +463,34 @@ func (s *Shell) sendCurrent() tea.Cmd {
 		return sendResultMsg{entry: HistoryEntry{
 			CollectionName: collectionName,
 			Request:        expanded,
+			Response:       resp,
+			Err:            err,
+			At:             time.Now(),
+		}}
+	}
+}
+
+// sendAdhoc executes the Adhoc scratch request directly via curl, without
+// any {{variable}} expansion (Adhoc mode is not associated with a
+// collection or environment). The result is recorded in the shared history
+// with an empty CollectionName.
+func (s *Shell) sendAdhoc() tea.Cmd {
+	if s.sending {
+		return nil
+	}
+	req := s.adhocRequest
+
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cancelSend = cancel
+	s.sending = true
+	s.statusMsg = ""
+
+	executor := s.executor
+	return func() tea.Msg {
+		resp, err := executor.Execute(ctx, req)
+		return sendResultMsg{entry: HistoryEntry{
+			CollectionName: "",
+			Request:        req,
 			Response:       resp,
 			Err:            err,
 			At:             time.Now(),

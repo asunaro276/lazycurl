@@ -50,6 +50,8 @@ func (s *Shell) View() string {
 		return overlayBox.Render("新規コレクション名:\n\n> " + s.input + "_")
 	case overlaySaveAdhoc:
 		return overlayBox.Render(s.viewSaveAdhoc())
+	case overlayRequestName:
+		return overlayBox.Render(s.viewRequestName())
 	case overlayConfirmDelete:
 		return overlayBox.Render(fmt.Sprintf("リクエスト %q を削除しますか? (y/n)", s.currentRequestName()))
 	}
@@ -126,6 +128,13 @@ func (s *Shell) viewSaveAdhoc() string {
 	}
 	b.WriteString(newLine)
 	return b.String()
+}
+
+// viewRequestName renders the save-time name prompt shown when the target
+// request (Collections' selected request, or the Adhoc scratch request) has
+// no name yet.
+func (s *Shell) viewRequestName() string {
+	return panelTitle.Render("リクエスト名を入力") + "\n\n> " + s.input + "_"
 }
 
 func (s *Shell) currentRequestName() string {

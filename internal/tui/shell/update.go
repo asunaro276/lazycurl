@@ -229,13 +229,40 @@ func (s *Shell) exitFormZoneBackward() {
 
 // saveFormZone persists the form's target request: to the selected
 // collection's `.http` file (Collections), or via the save-to-collection
-// overlay (Adhoc, which has no standalone file to write to).
+// overlay (Adhoc, which has no standalone file to write to). If the target
+// request has no name yet, it opens overlayRequestName to collect one first
+// and defers the actual save until the name is confirmed; a request that
+// already has a name skips the prompt.
 func (s *Shell) saveFormZone() tea.Cmd {
 	if s.mode == ModeAdhoc {
-		s.overlay = overlaySaveAdhoc
-		s.saveIdx = 0
+		if strings.TrimSpace(s.adhocRequest.Name) == "" {
+			s.namingAdhoc = true
+			s.overlay = overlayRequestName
+			s.input = ""
+			return nil
+		}
+		return s.beginAdhocSave()
+	}
+	if s.requestIdx < len(s.requests) && strings.TrimSpace(s.requests[s.requestIdx].Name) == "" {
+		s.namingAdhoc = false
+		s.overlay = overlayRequestName
+		s.input = ""
 		return nil
 	}
+	return s.saveCollectionsRequests()
+}
+
+// beginAdhocSave opens the save-to-collection overlay for the (now-named)
+// Adhoc scratch request.
+func (s *Shell) beginAdhocSave() tea.Cmd {
+	s.overlay = overlaySaveAdhoc
+	s.saveIdx = 0
+	return nil
+}
+
+// saveCollectionsRequests writes the selected collection's in-memory
+// requests to its `.http` file.
+func (s *Shell) saveCollectionsRequests() tea.Cmd {
 	if err := s.colStore.SaveRequests(s.currentCollectionName(), s.requests); err != nil {
 		return s.setStatus(err.Error())
 	}
@@ -448,6 +475,39 @@ func (s *Shell) handleOverlayKey(msg tea.KeyMsg) tea.Cmd {
 				return cmd
 			}
 			s.overlay = overlayNone
+		}
+		return nil
+
+	case overlayRequestName:
+		switch msg.String() {
+		case "esc":
+			s.overlay = overlayNone
+			s.namingAdhoc = false
+		case "enter":
+			name := strings.TrimSpace(s.input)
+			if name == "" {
+				return nil
+			}
+			if s.namingAdhoc {
+				s.adhocRequest.Name = name
+				s.editor.Name = name
+				s.namingAdhoc = false
+				return s.beginAdhocSave()
+			}
+			if s.requestIdx < len(s.requests) {
+				s.requests[s.requestIdx].Name = name
+			}
+			s.editor.Name = name
+			s.overlay = overlayNone
+			return s.saveCollectionsRequests()
+		case "backspace":
+			if len(s.input) > 0 {
+				s.input = s.input[:len(s.input)-1]
+			}
+		default:
+			if msg.Type == tea.KeyRunes {
+				s.input += string(msg.Runes)
+			}
 		}
 		return nil
 

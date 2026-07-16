@@ -200,12 +200,19 @@ func (g KVGrid) View(keyLabel, valueLabel string) string {
 			}
 		}
 
-		line := checkbox + " " + pad(key, 20) + " " + value
+		keyText := pad(key, 20)
+		valueText := value
+
+		selected := g.focused && i == g.cursorRow && !g.editing
+		if selected && g.cursorCol == colKey {
+			keyText = styleSelected.Render(keyText)
+		} else if selected && g.cursorCol == colValue {
+			valueText = styleSelected.Render(valueText)
+		}
+
+		line := checkbox + " " + keyText + " " + valueText
 		if !row.Enabled {
 			line = styleDisabled.Render(line)
-		}
-		if g.focused && i == g.cursorRow && !g.editing {
-			line = styleSelected.Render(line)
 		}
 		b = append(b, line)
 	}

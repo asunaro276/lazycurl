@@ -1,9 +1,14 @@
 package form
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
+
+	"github.com/asunaro276/lazycurl/internal/httpfile"
 )
 
 func key(s string) tea.KeyMsg {
@@ -61,6 +66,36 @@ func TestKVGridAddEditToggleDelete(t *testing.T) {
 	g, _ = g.Update(key("d"))
 	if len(g.Rows) != 0 {
 		t.Fatalf("expected 0 rows after delete, got %d", len(g.Rows))
+	}
+}
+
+func TestKVGridViewHighlightsSelectedCellOnly(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+
+	g := NewKVGrid()
+	g.Focus()
+	g.Rows = []httpfile.KV{{Enabled: true, Key: "X-Key", Value: "some-value"}}
+
+	highlightedKey := styleSelected.Render(pad("X-Key", 20))
+	highlightedValue := styleSelected.Render("some-value")
+
+	g.cursorCol = colKey
+	row := strings.Split(g.View("Key", "Value"), "\n")[1]
+	if !strings.Contains(row, highlightedKey) {
+		t.Fatalf("expected key cell highlighted when colKey selected, got %q", row)
+	}
+	if strings.Contains(row, highlightedValue) {
+		t.Fatalf("expected value cell NOT highlighted when colKey selected, got %q", row)
+	}
+
+	g.cursorCol = colValue
+	row = strings.Split(g.View("Key", "Value"), "\n")[1]
+	if strings.Contains(row, highlightedKey) {
+		t.Fatalf("expected key cell NOT highlighted when colValue selected, got %q", row)
+	}
+	if !strings.Contains(row, highlightedValue) {
+		t.Fatalf("expected value cell highlighted when colValue selected, got %q", row)
 	}
 }
 

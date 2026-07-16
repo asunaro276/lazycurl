@@ -95,10 +95,10 @@ func TestPrimaryFlow(t *testing.T) {
 	app = runKeys(t, app, tea.WindowSizeMsg{Width: 120, Height: 40})
 
 	// lazycurl now starts in Adhoc mode with the Editor panel already in
-	// its form zone; tab all the way through it (Name->Method->URL->
-	// content, then once more to exit) before using '['/']'/'1'-'4',
-	// which only work outside the form zone.
-	for range 4 {
+	// its form zone; tab all the way through it (Method->URL->content,
+	// then once more to exit) before using '['/']'/'1'-'4', which only
+	// work outside the form zone.
+	for range 3 {
 		app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyTab})
 	}
 	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")}) // -> Collections mode
@@ -122,17 +122,20 @@ func TestPrimaryFlow(t *testing.T) {
 	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyTab})
 	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 
-	// Fill in the request name, then move to URL and type it.
-	nameMsgs := runes("Ping")
-	app = runKeys(t, app, nameMsgs...)
-	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyTab}) // Name -> Method
+	// Move to URL and type it -- the form now starts at Method; Name is no
+	// longer a form field.
 	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyTab}) // Method -> URL
 	urlMsgs := runes("{{host}}/ping")
 	app = runKeys(t, app, urlMsgs...)
 
-	// Save: ctrl+s writes the in-memory requests (already updated on every
-	// keystroke) to the collection's .http file.
+	// Save: ctrl+s on a still-unnamed request opens the name prompt;
+	// entering a name and confirming completes the save (writing the
+	// in-memory requests, already updated on every keystroke, to the
+	// collection's .http file).
 	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyCtrlS})
+	nameMsgs := runes("Ping")
+	app = runKeys(t, app, nameMsgs...)
+	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyEnter})
 
 	requests, err := colStore.LoadRequests("api")
 	if err != nil {
@@ -204,20 +207,18 @@ func TestAdhocInlineEditUpdatesScratchRequest(t *testing.T) {
 	app = runKeys(t, app, tea.WindowSizeMsg{Width: 120, Height: 40})
 
 	// App (and Shell) start in Adhoc mode by default, with the Editor
-	// panel's form already focused at its first field (Name).
+	// panel's form already focused at its first field (Method -- Name is
+	// no longer part of the form; it's only requested at save time).
 	if app.shell.Mode() != shell.ModeAdhoc {
 		t.Fatalf("expected Adhoc mode by default, got %v", app.shell.Mode())
 	}
 
-	nameMsgs := runes("Scratch")
-	app = runKeys(t, app, nameMsgs...)
-	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyTab}) // Name -> Method
 	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyTab}) // Method -> URL
 	urlMsgs := runes("https://example.com/scratch")
 	app = runKeys(t, app, urlMsgs...)
 
 	req := app.shell.AdhocRequest()
-	if req.Name != "Scratch" || req.URL != "https://example.com/scratch" {
+	if req.URL != "https://example.com/scratch" {
 		t.Fatalf("unexpected scratch request: %+v", req)
 	}
 

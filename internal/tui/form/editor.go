@@ -32,8 +32,7 @@ var tabLabels = []string{"Params", "Headers", "Auth", "Body"}
 type focusZone int
 
 const (
-	focusName focusZone = iota
-	focusMethod
+	focusMethod focusZone = iota
 	focusURL
 	focusContent
 )
@@ -51,7 +50,11 @@ type editorDoneMsg struct {
 // are edited via form controls, Body via a textarea with an external
 // $EDITOR escape hatch (ctrl-e).
 type Editor struct {
-	Name       textinput.Model
+	// Name is the request's name. It is not part of the form's focus
+	// cycle or rendered UI -- it is injected via FromRequest (and read
+	// back via ToRequest) by callers that own the save-time name prompt
+	// (see internal/tui/shell's overlayRequestName).
+	Name       string
 	methodIdx  int
 	url        textinput.Model
 	params     KVGrid
@@ -76,10 +79,6 @@ type Editor struct {
 
 // New returns an empty Editor ready for a new request.
 func New() Editor {
-	name := textinput.New()
-	name.Placeholder = "Request name"
-	name.Focus()
-
 	u := textinput.New()
 	u.Placeholder = "https://{{host}}/path"
 
@@ -98,7 +97,6 @@ func New() Editor {
 	token.Placeholder = "token"
 
 	return Editor{
-		Name:      name,
 		url:       u,
 		params:    NewKVGrid(),
 		headers:   NewKVGrid(),
@@ -107,7 +105,7 @@ func New() Editor {
 		authToken: token,
 		body:      body,
 		pragTO:    to,
-		focus:     focusName,
+		focus:     focusMethod,
 		tab:       TabParams,
 	}
 }
@@ -115,7 +113,7 @@ func New() Editor {
 // FromRequest loads req into the form.
 func FromRequest(req httpfile.Request) Editor {
 	e := New()
-	e.Name.SetValue(req.Name)
+	e.Name = req.Name
 	for i, m := range Methods {
 		if m == req.Method {
 			e.methodIdx = i
@@ -148,7 +146,7 @@ func FromRequest(req httpfile.Request) Editor {
 // serialization or execution.
 func (e Editor) ToRequest() httpfile.Request {
 	return httpfile.Request{
-		Name:    e.Name.Value(),
+		Name:    e.Name,
 		Method:  Methods[e.methodIdx],
 		URL:     joinURL(e.url.Value(), e.params.Rows),
 		Headers: append([]httpfile.KV(nil), e.headers.Rows...),
@@ -175,7 +173,6 @@ func (e *Editor) SetSize(w, h int) {
 }
 
 func (e *Editor) blurAll() {
-	e.Name.Blur()
 	e.url.Blur()
 	e.params.Blur()
 	e.headers.Blur()
@@ -186,13 +183,11 @@ func (e *Editor) blurAll() {
 	e.pragTO.Blur()
 }
 
-// FocusNext cycles top-level focus: Name -> Method -> URL -> content
-// (active tab) -> Name.
+// FocusNext cycles top-level focus: Method -> URL -> content (active tab)
+// -> Method.
 func (e *Editor) FocusNext() {
 	e.blurAll()
 	switch e.focus {
-	case focusName:
-		e.focus = focusMethod
 	case focusMethod:
 		e.focus = focusURL
 		e.url.Focus()
@@ -200,8 +195,7 @@ func (e *Editor) FocusNext() {
 		e.focus = focusContent
 		e.focusActiveTab()
 	case focusContent:
-		e.focus = focusName
-		e.Name.Focus()
+		e.focus = focusMethod
 	}
 }
 
@@ -283,11 +277,6 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 	}
 
 	switch e.focus {
-	case focusName:
-		var cmd tea.Cmd
-		e.Name, cmd = e.Name.Update(msg)
-		return e, cmd
-
 	case focusMethod:
 		if km, ok := msg.(tea.KeyMsg); ok {
 			switch km.String() {
@@ -314,11 +303,11 @@ func (e *Editor) editingAuthField() bool {
 	return e.tab == TabAuth && e.authField > 0
 }
 
-// AtFirstFocus reports whether the Name field currently has top-level
+// AtFirstFocus reports whether the Method field currently has top-level
 // focus -- the first stop in the form's focus chain. Used by callers that
 // embed the form in a larger focus chain (e.g. a panel with its own list
 // zone before the form) to decide when shift+tab should exit the form.
-func (e Editor) AtFirstFocus() bool { return e.focus == focusName }
+func (e Editor) AtFirstFocus() bool { return e.focus == focusMethod }
 
 // AtLastFocus reports whether the content zone (Params/Headers/Auth/Body)
 // currently has top-level focus and isn't itself mid-field-edit in a way
@@ -466,15 +455,6 @@ var (
 // View renders the form.
 func (e Editor) View() string {
 	var b strings.Builder
-
-	nameView := e.Name.View()
-	if e.focus == focusName {
-		nameView = styleFocusBorder.Render(nameView)
-	} else {
-		nameView = stylePlainBorder.Render(nameView)
-	}
-	b.WriteString(nameView)
-	b.WriteString("\n\n")
 
 	methodView := Methods[e.methodIdx]
 	if e.focus == focusMethod {

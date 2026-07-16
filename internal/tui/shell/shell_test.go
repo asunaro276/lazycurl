@@ -240,13 +240,12 @@ func TestShellModeSwitchAndPanelCycling(t *testing.T) {
 		t.Fatalf("expected default focus PanelEditor (form zone), got focus=%v inFormZone=%v", s.focus, s.inFormZone())
 	}
 	if !s.editor.AtFirstFocus() {
-		t.Fatal("expected the embedded form to start at its first field (Name)")
+		t.Fatal("expected the embedded form to start at its first field (Method)")
 	}
 
-	// Tabbing through the whole form (Name -> Method -> URL -> content)
-	// exits forward to the next Shell panel once the form reaches its last
+	// Tabbing through the whole form (Method -> URL -> content) exits
+	// forward to the next Shell panel once the form reaches its last
 	// zone; a bare tab before that just moves within the form.
-	s.handleKey(tea.KeyMsg{Type: tea.KeyTab}) // Name -> Method
 	s.handleKey(tea.KeyMsg{Type: tea.KeyTab}) // Method -> URL
 	s.handleKey(tea.KeyMsg{Type: tea.KeyTab}) // URL -> content
 	if s.focus != PanelEditor || !s.editor.AtLastFocus() {
@@ -282,7 +281,7 @@ func TestShellModeSwitchAndPanelCycling(t *testing.T) {
 		t.Fatalf("expected focus reset to PanelEditor, got %v", s.focus)
 	}
 	if !s.editor.AtFirstFocus() {
-		t.Fatal("expected the embedded form to reset to Name on re-entering PanelEditor")
+		t.Fatal("expected the embedded form to reset to Method on re-entering PanelEditor")
 	}
 }
 
@@ -300,10 +299,6 @@ func TestShellAdhocEditAndSendWithoutCollection(t *testing.T) {
 	if !s.inFormZone() {
 		t.Fatal("expected Adhoc's Editor panel to always be in the form zone")
 	}
-	for _, r := range "Scratch" {
-		s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-	}
-	s.handleKey(tea.KeyMsg{Type: tea.KeyTab}) // Name -> Method
 	s.handleKey(tea.KeyMsg{Type: tea.KeyTab}) // Method -> URL
 	for _, r := range "https://example.com/scratch" {
 		s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
@@ -393,7 +388,6 @@ func TestShellFormZoneProtectsTextInputFromGlobalShortcuts(t *testing.T) {
 	if !s.inFormZone() {
 		t.Fatal("expected Adhoc's Editor panel to start in the form zone")
 	}
-	s.handleKey(tea.KeyMsg{Type: tea.KeyTab}) // Name -> Method
 	s.handleKey(tea.KeyMsg{Type: tea.KeyTab}) // Method -> URL
 
 	for _, r := range "https://x.test/a[1]?q=1" {
@@ -482,5 +476,128 @@ func TestShellAdhocSaveSwitchesToCollectionsMode(t *testing.T) {
 	}
 	if s.overlay != overlayNone {
 		t.Fatalf("expected overlay closed after save, got %v", s.overlay)
+	}
+}
+
+// TestShellSaveUnnamedRequestPromptsForName covers the Collections save
+// path: a freshly created request has no name, so ctrl+s must open
+// overlayRequestName instead of writing to disk immediately; entering a
+// name and confirming completes the save with that name.
+func TestShellSaveUnnamedRequestPromptsForName(t *testing.T) {
+	s := newTestShell(t)
+	s.mode = ModeCollections
+	s.focus = PanelRequests
+
+	// 'n' appends a nameless request and enters the form zone directly.
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if s.requests[s.requestIdx].Name != "" {
+		t.Fatalf("expected the newly created request to start unnamed, got %+v", s.requests[s.requestIdx])
+	}
+
+	s.handleKey(tea.KeyMsg{Type: tea.KeyTab}) // Method -> URL
+	for _, r := range "https://example.com/new" {
+		s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+
+	s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if s.overlay != overlayRequestName {
+		t.Fatalf("expected overlayRequestName for an unnamed request, got %v", s.overlay)
+	}
+
+	for _, r := range "New request" {
+		s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if s.overlay != overlayNone {
+		t.Fatalf("expected overlay closed after confirming the name, got %v", s.overlay)
+	}
+
+	requests, err := s.colStore.LoadRequests("api")
+	if err != nil {
+		t.Fatalf("LoadRequests: %v", err)
+	}
+	if len(requests) != 3 || requests[2].Name != "New request" || requests[2].URL != "https://example.com/new" {
+		t.Fatalf("expected the new request saved with the prompted name, got %+v", requests)
+	}
+}
+
+// TestShellSaveUnnamedRequestPromptCancel confirms esc closes the name
+// prompt without writing anything to disk.
+func TestShellSaveUnnamedRequestPromptCancel(t *testing.T) {
+	s := newTestShell(t)
+	s.mode = ModeCollections
+	s.focus = PanelRequests
+
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if s.overlay != overlayRequestName {
+		t.Fatalf("expected overlayRequestName, got %v", s.overlay)
+	}
+
+	s.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if s.overlay != overlayNone {
+		t.Fatalf("expected overlay closed after esc, got %v", s.overlay)
+	}
+
+	requests, err := s.colStore.LoadRequests("api")
+	if err != nil {
+		t.Fatalf("LoadRequests: %v", err)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("expected on-disk requests unchanged after cancel, got %+v", requests)
+	}
+}
+
+// TestShellSaveNamedRequestSkipsPrompt covers the "既存リクエストの再保存"
+// scenario: a request that already has a name must save immediately on
+// ctrl+s, with no name prompt interrupting the flow.
+func TestShellSaveNamedRequestSkipsPrompt(t *testing.T) {
+	s := newTestShell(t)
+	s.mode = ModeCollections
+	s.focus = PanelRequests
+	s.requestIdx = 0 // "Get health" already has a name
+
+	s.handleKey(tea.KeyMsg{Type: tea.KeyTab}) // enter the form zone
+	s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlS})
+
+	if s.overlay != overlayNone {
+		t.Fatalf("expected no name prompt for an already-named request, got overlay %v", s.overlay)
+	}
+}
+
+// TestShellAdhocSaveUnnamedRequestPromptsForNameFirst covers the Adhoc save
+// path: an unnamed scratch request must be named via overlayRequestName
+// before the save-to-collection picker (overlaySaveAdhoc) appears.
+func TestShellAdhocSaveUnnamedRequestPromptsForNameFirst(t *testing.T) {
+	s := newTestShell(t) // has collection "api" with 2 requests
+	s.SetAdhocRequest(httpfile.Request{Method: "GET", URL: "https://example.com/scratch"})
+
+	s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if s.overlay != overlayRequestName {
+		t.Fatalf("expected overlayRequestName before the collection picker, got %v", s.overlay)
+	}
+
+	for _, r := range "Scratch" {
+		s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if s.overlay != overlaySaveAdhoc {
+		t.Fatalf("expected overlaySaveAdhoc once the name is confirmed, got %v", s.overlay)
+	}
+	if s.AdhocRequest().Name != "Scratch" {
+		t.Fatalf("expected the scratch request to carry the prompted name, got %+v", s.AdhocRequest())
+	}
+
+	s.saveIdx = 0 // "api"
+	s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+
+	requests, err := s.colStore.LoadRequests("api")
+	if err != nil {
+		t.Fatalf("LoadRequests: %v", err)
+	}
+	if len(requests) != 3 || requests[2].Name != "Scratch" {
+		t.Fatalf("expected the scratch request saved with the prompted name, got %+v", requests)
 	}
 }

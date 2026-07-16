@@ -74,6 +74,7 @@ const (
 	overlayNewCollection
 	overlayConfirmDelete
 	overlaySaveAdhoc
+	overlayRequestName
 )
 
 // QuitMsg is emitted when the user requests to quit.
@@ -103,6 +104,7 @@ type Shell struct {
 	adhocRequest httpfile.Request // Adhoc mode's unsaved scratch request
 	saveIdx      int              // selection index within overlaySaveAdhoc
 	savingAdhoc  bool             // true while overlayNewCollection is servicing an Adhoc save
+	namingAdhoc  bool             // true while overlayRequestName is servicing an Adhoc save (vs. a Collections save)
 
 	// editor is the embedded request-editing form shown inline in the
 	// Requests panel (Collections, when reqZone==zoneForm) or the Editor

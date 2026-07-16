@@ -69,6 +69,33 @@ func TestKVGridAddEditToggleDelete(t *testing.T) {
 	}
 }
 
+func TestKVGridEditingExistingKeyDoesNotAdvanceToValue(t *testing.T) {
+	g := NewKVGrid()
+	g.Focus()
+	g.Rows = []httpfile.KV{{Enabled: true, Key: "X", Value: "Y"}}
+	g.cursorCol = colKey
+
+	g, _ = g.Update(key("enter")) // start editing existing key
+	if !g.editing {
+		t.Fatalf("expected to be editing key")
+	}
+
+	g, _ = g.Update(key("Z"))
+	g, _ = g.Update(key("enter")) // commit
+	if g.Rows[0].Key != "XZ" {
+		t.Fatalf("expected key 'XZ', got %q", g.Rows[0].Key)
+	}
+	if g.editing {
+		t.Fatalf("expected editing to stop after committing an existing row's key, not advance to value")
+	}
+	if g.cursorCol != colKey {
+		t.Fatalf("expected cursor to stay on colKey, got %v", g.cursorCol)
+	}
+	if g.Rows[0].Value != "Y" {
+		t.Fatalf("expected value unchanged, got %q", g.Rows[0].Value)
+	}
+}
+
 func TestKVGridViewHighlightsSelectedCellOnly(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI)
 	defer lipgloss.SetColorProfile(termenv.Ascii)
@@ -77,25 +104,45 @@ func TestKVGridViewHighlightsSelectedCellOnly(t *testing.T) {
 	g.Focus()
 	g.Rows = []httpfile.KV{{Enabled: true, Key: "X-Key", Value: "some-value"}}
 
-	highlightedKey := styleSelected.Render(pad("X-Key", 20))
-	highlightedValue := styleSelected.Render("some-value")
+	cursoredKeyCell := renderKVCell("X-Key", true, false)
+	plainKeyCell := renderKVCell("X-Key", false, false)
+	cursoredValueCell := renderKVCell("some-value", true, false)
+	plainValueCell := renderKVCell("some-value", false, false)
 
 	g.cursorCol = colKey
 	row := strings.Split(g.View("Key", "Value"), "\n")[1]
-	if !strings.Contains(row, highlightedKey) {
-		t.Fatalf("expected key cell highlighted when colKey selected, got %q", row)
+	if !strings.Contains(row, cursoredKeyCell) {
+		t.Fatalf("expected key cell cursor-highlighted when colKey selected, got %q", row)
 	}
-	if strings.Contains(row, highlightedValue) {
-		t.Fatalf("expected value cell NOT highlighted when colKey selected, got %q", row)
+	if !strings.Contains(row, plainValueCell) {
+		t.Fatalf("expected value cell plain when colKey selected, got %q", row)
 	}
 
 	g.cursorCol = colValue
 	row = strings.Split(g.View("Key", "Value"), "\n")[1]
-	if strings.Contains(row, highlightedKey) {
-		t.Fatalf("expected key cell NOT highlighted when colValue selected, got %q", row)
+	if !strings.Contains(row, plainKeyCell) {
+		t.Fatalf("expected key cell plain when colValue selected, got %q", row)
 	}
-	if !strings.Contains(row, highlightedValue) {
-		t.Fatalf("expected value cell highlighted when colValue selected, got %q", row)
+	if !strings.Contains(row, cursoredValueCell) {
+		t.Fatalf("expected value cell cursor-highlighted when colValue selected, got %q", row)
+	}
+}
+
+func TestKVGridViewHeaderAlignsWithBoxContent(t *testing.T) {
+	g := NewKVGrid()
+	g.Rows = []httpfile.KV{{Enabled: true, Key: "ZZZZ", Value: "WWWW"}}
+
+	lines := strings.Split(g.View("Param", "Value"), "\n")
+	header, row := lines[0], lines[1]
+
+	keyIdx := strings.Index(row, "ZZZZ")
+	if keyIdx == -1 || !strings.HasPrefix(header[keyIdx:], "Param") {
+		t.Fatalf("expected header %q to align \"Param\" with key content in row %q", header, row)
+	}
+
+	valueIdx := strings.Index(row, "WWWW")
+	if valueIdx == -1 || !strings.HasPrefix(header[valueIdx:], "Value") {
+		t.Fatalf("expected header %q to align \"Value\" with value content in row %q", header, row)
 	}
 }
 

@@ -33,6 +33,11 @@ type KVGrid struct {
 	editing   bool
 	input     textinput.Model
 	focused   bool
+
+	// advanceToValue is set only by the "a" (add row) flow so that
+	// committing a brand-new row's key advances straight into editing its
+	// value. Re-editing an existing row's key must not trigger this.
+	advanceToValue bool
 }
 
 // NewKVGrid returns an empty, unfocused grid.
@@ -52,6 +57,7 @@ func (g KVGrid) Focused() bool { return g.focused }
 
 func (g *KVGrid) cancelEdit() {
 	g.editing = false
+	g.advanceToValue = false
 	g.input.Blur()
 }
 
@@ -96,8 +102,10 @@ func (g KVGrid) Update(msg tea.Msg) (KVGrid, tea.Cmd) {
 		case tea.KeyMsg:
 			switch m.String() {
 			case "enter":
+				advance := g.advanceToValue && g.cursorCol == colKey
 				g.commitEdit()
-				if g.cursorCol == colKey {
+				g.advanceToValue = false
+				if advance {
 					g.cursorCol = colValue
 					g.startEdit()
 				}
@@ -144,6 +152,7 @@ func (g KVGrid) Update(msg tea.Msg) (KVGrid, tea.Cmd) {
 				g.Rows[g.cursorRow].Enabled = !g.Rows[g.cursorRow].Enabled
 			}
 		} else {
+			g.advanceToValue = false
 			g.startEdit()
 		}
 	case "a":
@@ -151,6 +160,7 @@ func (g KVGrid) Update(msg tea.Msg) (KVGrid, tea.Cmd) {
 		g.cursorRow = len(g.Rows) - 1
 		g.cursorCol = colKey
 		g.startEdit()
+		g.advanceToValue = true
 	case "d", "x":
 		if len(g.Rows) > 0 {
 			g.Rows = append(g.Rows[:g.cursorRow], g.Rows[g.cursorRow+1:]...)
@@ -163,21 +173,57 @@ func (g KVGrid) Update(msg tea.Msg) (KVGrid, tea.Cmd) {
 }
 
 var (
-	styleHeader   = lipgloss.NewStyle().Bold(true).Faint(true)
-	styleSelected = lipgloss.NewStyle().Reverse(true)
-	styleDisabled = lipgloss.NewStyle().Faint(true)
+	styleHeader     = lipgloss.NewStyle().Bold(true).Faint(true)
+	styleSelected   = lipgloss.NewStyle().Reverse(true)
+	styleDisabled   = lipgloss.NewStyle().Faint(true)
+	styleBoxPlain   = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	styleBoxCursor  = lipgloss.NewStyle().Foreground(lipgloss.Color("62"))
+	styleBoxEditing = lipgloss.NewStyle().Foreground(lipgloss.Color("62")).Bold(true)
 )
+
+// kvCellWidth is the inner text width of a Key/Value input box in View.
+const kvCellWidth = 20
+
+// kvBoxPrefix/kvBoxSuffix are the visible widths of a cell's "[ " / " ]"
+// decoration; the header row's label offsets must match these exactly so
+// header text lines up with the box's inner content, not its brackets.
+const (
+	kvBoxPrefix = 2
+	kvBoxSuffix = 2
+	kvColGap    = 3
+)
+
+// renderKVCell renders one Key or Value cell as an always-visible input box
+// ("[ text ]"), so it reads as a form field rather than plain table text.
+// The box brackets highlight to indicate cursor/edit state; cursor and
+// editing never overlap since editing implies the cell is under the cursor.
+func renderKVCell(content string, cursor, editing bool) string {
+	style := styleBoxPlain
+	switch {
+	case editing:
+		style = styleBoxEditing
+	case cursor:
+		style = styleBoxCursor
+	}
+	return style.Render("[") + " " + pad(content, kvCellWidth) + " " + style.Render("]")
+}
 
 // View renders the grid. keyLabel/valueLabel customize the header row
 // (e.g. "Key"/"Value" for headers, "Param"/"Value" for query params).
 func (g KVGrid) View(keyLabel, valueLabel string) string {
 	var b []string
-	b = append(b, styleHeader.Render("   "+pad(keyLabel, 20)+" "+valueLabel))
+
+	// Label offsets mirror renderKVCell's "[ " prefix so header text lines
+	// up with each box's inner content, fixing the header/row misalignment.
+	headerKeyOffset := 3 + 1 + kvBoxPrefix // checkbox + separator + "[ "
+	headerValueOffset := kvBoxSuffix + kvColGap + kvBoxPrefix
+	header := strings.Repeat(" ", headerKeyOffset) + pad(keyLabel, kvCellWidth) + strings.Repeat(" ", headerValueOffset) + valueLabel
+	b = append(b, styleHeader.Render(header))
 
 	if len(g.Rows) == 0 {
 		hint := "(no rows - press 'a' to add)"
 		if g.focused {
-			b = append(b, styleSelected.Render(hint))
+			b = append(b, styleBoxCursor.Render(hint))
 		} else {
 			b = append(b, styleDisabled.Render(hint))
 		}
@@ -192,25 +238,19 @@ func (g KVGrid) View(keyLabel, valueLabel string) string {
 
 		key := row.Key
 		value := row.Value
-		if g.focused && g.editing && i == g.cursorRow {
-			if g.cursorCol == colKey {
-				key = g.input.View()
-			} else if g.cursorCol == colValue {
-				value = g.input.View()
-			}
+		editingKey := g.focused && g.editing && i == g.cursorRow && g.cursorCol == colKey
+		editingValue := g.focused && g.editing && i == g.cursorRow && g.cursorCol == colValue
+		if editingKey {
+			key = g.input.View()
+		} else if editingValue {
+			value = g.input.View()
 		}
 
-		keyText := pad(key, 20)
-		valueText := value
+		onRow := g.focused && i == g.cursorRow && !g.editing
+		keyCell := renderKVCell(key, onRow && g.cursorCol == colKey, editingKey)
+		valueCell := renderKVCell(value, onRow && g.cursorCol == colValue, editingValue)
 
-		selected := g.focused && i == g.cursorRow && !g.editing
-		if selected && g.cursorCol == colKey {
-			keyText = styleSelected.Render(keyText)
-		} else if selected && g.cursorCol == colValue {
-			valueText = styleSelected.Render(valueText)
-		}
-
-		line := checkbox + " " + keyText + " " + valueText
+		line := checkbox + " " + keyCell + strings.Repeat(" ", kvColGap) + valueCell
 		if !row.Enabled {
 			line = styleDisabled.Render(line)
 		}

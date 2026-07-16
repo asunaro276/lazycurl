@@ -18,28 +18,16 @@ var (
 	overlayBox           = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1, 2)
 	statusBarStyle       = lipgloss.NewStyle().Faint(true)
 	errorStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
-	modeTabActive        = lipgloss.NewStyle().Bold(true).Reverse(true).Padding(0, 1)
-	modeTabInactive      = lipgloss.NewStyle().Faint(true).Padding(0, 1)
 )
 
-// modeBarHeight is the number of terminal rows the mode-tab bar occupies.
-const modeBarHeight = 1
-
-// View renders the full shell: the mode-tab bar, the active mode's panel
-// layout, and a status bar, with any active overlay drawn on top.
+// View renders the full shell: the always-visible 2x2 panel grid and a
+// status bar, with any active overlay drawn on top.
 func (s *Shell) View() string {
 	if s.width == 0 {
 		return "loading..."
 	}
 
-	var body string
-	if s.mode == ModeAdhoc {
-		body = s.viewAdhocLayout()
-	} else {
-		body = s.viewCollectionsLayout()
-	}
-
-	main := lipgloss.JoinVertical(lipgloss.Left, s.viewModeTabs(), body, s.viewStatusBar())
+	main := lipgloss.JoinVertical(lipgloss.Left, s.viewGrid(), s.viewStatusBar())
 
 	switch s.overlay {
 	case overlayHelp:
@@ -48,71 +36,39 @@ func (s *Shell) View() string {
 		return overlayBox.Render(s.viewEnvSelect())
 	case overlayNewCollection:
 		return overlayBox.Render("新規コレクション名:\n\n> " + s.input + "_")
-	case overlaySaveAdhoc:
-		return overlayBox.Render(s.viewSaveAdhoc())
+	case overlaySaveTo:
+		return overlayBox.Render(s.viewSaveTo())
 	case overlayRequestName:
 		return overlayBox.Render(s.viewRequestName())
 	case overlayConfirmDelete:
-		return overlayBox.Render(fmt.Sprintf("リクエスト %q を削除しますか? (y/n)", s.currentRequestName()))
+		return overlayBox.Render(fmt.Sprintf("リクエスト %q を削除しますか? (y/n)", s.currentPreviewRequestName()))
 	}
 	return main
 }
 
-// viewModeTabs renders the Adhoc/Collections mode tabs, highlighting the
-// active one.
-func (s *Shell) viewModeTabs() string {
-	adhoc, collections := "Adhoc", "Collections"
-	if s.mode == ModeAdhoc {
-		adhoc = modeTabActive.Render(adhoc)
-		collections = modeTabInactive.Render(collections)
-	} else {
-		adhoc = modeTabInactive.Render(adhoc)
-		collections = modeTabActive.Render(collections)
-	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, adhoc, " ", collections)
-}
-
-func (s *Shell) viewCollectionsLayout() string {
-	leftWidth := s.width / 4
-	rightWidth := s.width - leftWidth - 1
-	topHeight := (s.height - modeBarHeight) * 2 / 3
-	bottomHeight := (s.height - modeBarHeight) - topHeight - 3 // leave room for status bar
-
-	if s.reqZone == zoneForm {
-		s.editor.SetSize(leftWidth-4, bottomHeight-4)
-	}
-
-	collectionsPanel := s.renderPanel(PanelCollections, leftWidth, topHeight, s.viewCollections())
-	requestsPanel := s.renderPanel(PanelRequests, leftWidth, bottomHeight, s.viewRequests())
-	left := lipgloss.JoinVertical(lipgloss.Left, collectionsPanel, requestsPanel)
-
-	responsePanel := s.renderPanel(PanelResponse, rightWidth, topHeight, s.viewResponse())
-	historyPanel := s.renderPanel(PanelHistory, rightWidth, bottomHeight, s.viewHistory())
-	right := lipgloss.JoinVertical(lipgloss.Left, responsePanel, historyPanel)
-
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
-}
-
-// viewAdhocLayout renders Adhoc mode's 3-pane layout: the request editor on
-// the left (full height), Response and History stacked on the right.
-func (s *Shell) viewAdhocLayout() string {
+// viewGrid renders the shell's fixed 2x2 panel layout: [0] Request and
+// [1] Response on top, [2] Collections and [3] History on the bottom. No
+// mode or layout variant exists -- all four panels are always shown.
+func (s *Shell) viewGrid() string {
 	leftWidth := s.width / 2
 	rightWidth := s.width - leftWidth - 1
-	fullHeight := s.height - modeBarHeight - 3 // leave room for status bar
-	topHeight := fullHeight * 2 / 3
-	bottomHeight := fullHeight - topHeight
+	topHeight := s.height * 2 / 3
+	bottomHeight := s.height - topHeight - 3 // leave room for status bar
 
-	s.editor.SetSize(leftWidth-4, fullHeight-4)
-	editorPanel := s.renderPanel(PanelEditor, leftWidth, fullHeight, s.editor.View())
+	s.editor.SetSize(leftWidth-4, topHeight-4)
 
+	requestPanel := s.renderPanel(PanelRequest, leftWidth, topHeight, s.editor.View())
 	responsePanel := s.renderPanel(PanelResponse, rightWidth, topHeight, s.viewResponse())
-	historyPanel := s.renderPanel(PanelHistory, rightWidth, bottomHeight, s.viewHistory())
-	right := lipgloss.JoinVertical(lipgloss.Left, responsePanel, historyPanel)
+	top := lipgloss.JoinHorizontal(lipgloss.Top, requestPanel, responsePanel)
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, editorPanel, right)
+	collectionsPanel := s.renderPanel(PanelCollections, leftWidth, bottomHeight, s.viewCollectionsAccordion())
+	historyPanel := s.renderPanel(PanelHistory, rightWidth, bottomHeight, s.viewHistoryAccordion())
+	bottom := lipgloss.JoinHorizontal(lipgloss.Top, collectionsPanel, historyPanel)
+
+	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
 }
 
-func (s *Shell) viewSaveAdhoc() string {
+func (s *Shell) viewSaveTo() string {
 	var b strings.Builder
 	b.WriteString(panelTitle.Render("保存先コレクションを選択") + "\n\n")
 	for i, c := range s.collections {
@@ -131,15 +87,15 @@ func (s *Shell) viewSaveAdhoc() string {
 }
 
 // viewRequestName renders the save-time name prompt shown when the target
-// request (Collections' selected request, or the Adhoc scratch request) has
-// no name yet.
+// request (the loaded collection request, or the scratch request) has no
+// name yet.
 func (s *Shell) viewRequestName() string {
 	return panelTitle.Render("リクエスト名を入力") + "\n\n> " + s.input + "_"
 }
 
-func (s *Shell) currentRequestName() string {
-	if s.requestIdx < len(s.requests) {
-		return s.requests[s.requestIdx].Name
+func (s *Shell) currentPreviewRequestName() string {
+	if s.collectionReqIdx >= 0 && s.collectionReqIdx < len(s.previewRequests) {
+		return s.previewRequests[s.collectionReqIdx].Name
 	}
 	return ""
 }
@@ -154,60 +110,44 @@ func (s *Shell) renderPanel(p Panel, w, h int, content string) string {
 	return style.Width(w - 2).Height(h - 2).Render(body)
 }
 
-func (s *Shell) viewCollections() string {
+// viewCollectionsAccordion renders the Collections panel: the collection
+// under the cursor (collectionIdx) is always expanded to show its request
+// list (previewRequests), with whichever row the cursor rests on
+// highlighted (the header itself, when collectionReqIdx == -1). Other
+// collections stay collapsed to a single name line.
+func (s *Shell) viewCollectionsAccordion() string {
 	if len(s.collections) == 0 {
-		return "(コレクションがありません。'n' で新規作成)"
+		return "(コレクションがありません。'N' で新規作成)"
 	}
+
 	var lines []string
 	for i, c := range s.collections {
-		line := c.Name
-		if i == s.collectionIdx {
-			line = listSelected.Render(line)
-		}
-		lines = append(lines, line)
-	}
-	return strings.Join(lines, "\n")
-}
-
-func (s *Shell) viewRequests() string {
-	if len(s.requests) == 0 {
-		return "(リクエストがありません。'n' で新規作成)"
-	}
-
-	env := s.activeEnvName()
-	header := ""
-	if env != "" {
-		header = statusBarStyle.Render("env: "+env) + "\n"
-	}
-
-	if s.reqZone == zoneForm {
-		return header + s.viewRequestsAccordion()
-	}
-
-	var lines []string
-	for i, r := range s.requests {
-		var line string
-		if i == s.requestIdx {
-			line = listSelected.Render(padMethod(r.Method) + " " + r.Name)
-		} else {
-			line = styles.MethodBadge(padMethod(r.Method)) + " " + r.Name
-		}
-		lines = append(lines, line)
-	}
-	return header + strings.Join(lines, "\n")
-}
-
-// viewRequestsAccordion renders the Requests list with the selected row
-// expanded into the embedded editor form; other rows stay as one-line
-// summaries (Method + Name).
-func (s *Shell) viewRequestsAccordion() string {
-	var lines []string
-	for i, r := range s.requests {
-		if i == s.requestIdx {
-			lines = append(lines, s.editor.View())
+		if i != s.collectionIdx {
+			lines = append(lines, c.Name)
 			continue
 		}
-		lines = append(lines, styles.MethodBadge(padMethod(r.Method))+" "+r.Name)
+
+		header := c.Name
+		if s.collectionReqIdx == -1 {
+			header = listSelected.Render(header)
+		}
+		if env := s.activeEnvName(); env != "" {
+			header += "  " + statusBarStyle.Render("env: "+env)
+		}
+		lines = append(lines, header)
+
+		if len(s.previewRequests) == 0 {
+			lines = append(lines, statusBarStyle.Render("  (リクエストがありません。'n' で新規作成)"))
+			continue
+		}
+		for j, r := range s.previewRequests {
+			summary := padMethod(r.Method) + " " + r.Name
+			if j == s.collectionReqIdx {
+				lines = append(lines, "  "+listSelected.Render(summary))
+			} else {
+				lines = append(lines, "  "+styles.MethodBadge(padMethod(r.Method))+" "+r.Name)
+			}
+		}
 	}
 	return strings.Join(lines, "\n")
 }
@@ -256,7 +196,11 @@ func renderResponse(resp *curlexec.Response) string {
 	return b.String()
 }
 
-func (s *Shell) viewHistory() string {
+// viewHistoryAccordion renders the History panel: the entry under the
+// cursor (historyIdx) is expanded to preview its method/URL and outcome; it
+// only takes effect on [1] Response once enter is pressed (viewingIdx).
+// Other entries stay collapsed to a single summary line.
+func (s *Shell) viewHistoryAccordion() string {
 	if len(s.history) == 0 {
 		return "(履歴はありません)"
 	}
@@ -266,11 +210,20 @@ func (s *Shell) viewHistory() string {
 		if h.Err == nil && h.Response != nil {
 			status = styles.StatusBadge(h.Response.StatusCode)
 		}
-		line := fmt.Sprintf("%s %s %s", h.At.Format("15:04:05"), status, h.Request.Name)
-		if i == s.historyIdx {
-			line = listSelected.Render(fmt.Sprintf("%s %s", h.At.Format("15:04:05"), h.Request.Name))
+		summary := fmt.Sprintf("%s %s %s", h.At.Format("15:04:05"), status, h.Request.Name)
+
+		if i != s.historyIdx {
+			lines = append(lines, summary)
+			continue
 		}
-		lines = append(lines, line)
+
+		lines = append(lines, listSelected.Render(summary))
+		lines = append(lines, "  "+h.Request.Method+" "+h.Request.URL)
+		if h.Err != nil {
+			lines = append(lines, "  "+errorStyle.Render(h.Err.Error()))
+		} else if h.Response != nil {
+			lines = append(lines, fmt.Sprintf("  %s", h.Response.TimeTotal))
+		}
 	}
 	return strings.Join(lines, "\n")
 }
@@ -279,50 +232,62 @@ func (s *Shell) viewStatusBar() string {
 	if s.statusMsg != "" {
 		return errorStyle.Render(s.statusMsg)
 	}
-	if s.inFormZone() {
-		return statusBarStyle.Render("tab/shift+tab: 移動  [/]: セクション切替  ctrl+r: 送信  ctrl+s: 保存  ctrl+c: 終了")
-	}
-	if s.mode == ModeAdhoc {
-		return statusBarStyle.Render("[/]: モード切替  tab: 切替  ?: ヘルプ  q: 終了")
-	}
-	return statusBarStyle.Render("[/]: モード切替  tab: 切替/編集開始  j/k: 移動  enter: 送信/選択  n: 新規  ?: ヘルプ  q: 終了")
+	return statusBarStyle.Render(s.footerHint())
 }
 
-// viewHelp renders the keybinding help overlay. Note that PanelEditor
-// (Adhoc) is always in the form zone, and '?' is swallowed as text input
-// while any part of the form has focus (see D6 in the design), so this
-// overlay can never actually be shown while s.focus == PanelEditor -- the
-// form-zone bindings are documented in a general note instead.
+// footerHint derives the keybinding hint line from the currently focused
+// panel and, for the Request panel, its normal/insert state and active
+// tab -- so the footer always reflects exactly the keys usable right now.
+func (s *Shell) footerHint() string {
+	switch s.focus {
+	case PanelRequest:
+		if s.editor.Editing() {
+			return "esc: 前の階層に戻る  ctrl+r: 送信  ctrl+s: 保存  ctrl+c: 終了"
+		}
+		return "j/k: 移動  h/l: Method変更  enter: 編集開始  [/]: タブ切替  ctrl+r: 送信  ctrl+s: 保存  0-3/tab: パネル移動  ?: ヘルプ  q: 終了"
+	case PanelCollections:
+		return "j/k: 移動  enter: 開く/ロード  n: 新規リクエスト  N: 新規コレクション  c: 複製  d/x: 削除  E: environment切替  0-3/tab: パネル移動  ?: ヘルプ  q: 終了"
+	case PanelHistory:
+		return "j/k: プレビュー  enter: Responseへ反映  0-3/tab: パネル移動  ?: ヘルプ  q: 終了"
+	case PanelResponse:
+		return "0-3/tab: パネル移動  ?: ヘルプ  q: 終了"
+	}
+	return ""
+}
+
+// viewHelp renders the keybinding help overlay.
 func (s *Shell) viewHelp() string {
 	var lines []string
 	lines = append(lines, panelTitle.Render("キーバインド ("+panelLabels[s.focus]+")"))
 	lines = append(lines, "")
-	lines = append(lines, "[ / ]             モード切替 (Adhoc / Collections)")
 	lines = append(lines, "tab / shift+tab   パネル間移動")
-	lines = append(lines, "1-4               パネルへジャンプ")
+	lines = append(lines, "0-3               パネルへジャンプ (insert状態を除く)")
 	lines = append(lines, "j/k               上下移動")
 	lines = append(lines, "?                 このヘルプ")
 	lines = append(lines, "q / ctrl-c        終了")
 	lines = append(lines, "")
 	switch s.focus {
+	case PanelRequest:
+		lines = append(lines, "j/k               Method/URL/タブ内容間を移動 (normal)")
+		lines = append(lines, "h/l               Methodを変更 (normal)")
+		lines = append(lines, "enter             フィールドへinsert (normal -> insert)")
+		lines = append(lines, "esc               1階層戻る (insert -> normal)")
+		lines = append(lines, "[ / ]             タブ切替 (normal, Params/Headers/Auth/Body)")
+		lines = append(lines, "ctrl+r            送信")
+		lines = append(lines, "ctrl+s            保存 (無名なら名前を確認)")
 	case PanelCollections:
-		lines = append(lines, "enter             リクエスト一覧へ")
-		lines = append(lines, "n                 新規コレクション作成")
-		lines = append(lines, "E                 environment切り替え")
-	case PanelRequests:
-		lines = append(lines, "enter             リクエスト送信")
-		lines = append(lines, "tab               選択中リクエストを編集(フォームゾーンへ)")
-		lines = append(lines, "n                 新規リクエスト作成(即編集)")
-		lines = append(lines, "c                 複製")
-		lines = append(lines, "d/x               削除")
+		lines = append(lines, "enter             ヘッダ: 展開  リクエスト行: [0] Requestへロード")
+		lines = append(lines, "n                 選択中コレクションに新規リクエスト")
+		lines = append(lines, "N                 新規コレクション作成")
+		lines = append(lines, "c                 リクエストを複製")
+		lines = append(lines, "d/x               リクエストを削除")
 		lines = append(lines, "E                 environment切り替え")
 	case PanelHistory:
-		lines = append(lines, "enter             選択した履歴をResponseパネルに表示")
+		lines = append(lines, "j/k               プレビュー展開")
+		lines = append(lines, "enter             選択した履歴を[1] Responseパネルへ反映")
 	case PanelResponse:
 		lines = append(lines, "(表示専用)")
 	}
-	lines = append(lines, "")
-	lines = append(lines, "編集フォーム内: tab/shift+tab 移動  [/] セクション切替  ctrl+r 送信  ctrl+s 保存  ctrl+c 終了")
 	lines = append(lines, "")
 	lines = append(lines, "(閉じる: esc / ? / enter)")
 	return strings.Join(lines, "\n")

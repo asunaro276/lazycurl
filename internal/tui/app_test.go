@@ -11,7 +11,6 @@ import (
 	"github.com/asunaro276/lazycurl/internal/collection"
 	"github.com/asunaro276/lazycurl/internal/curlexec"
 	"github.com/asunaro276/lazycurl/internal/environment"
-	"github.com/asunaro276/lazycurl/internal/tui/shell"
 )
 
 // stubRunner fakes curl execution for the end-to-end flow test, avoiding a
@@ -94,18 +93,14 @@ func TestPrimaryFlow(t *testing.T) {
 
 	app = runKeys(t, app, tea.WindowSizeMsg{Width: 120, Height: 40})
 
-	// lazycurl now starts in Adhoc mode with the Editor panel already in
-	// its form zone; tab all the way through it (Method->URL->content,
-	// then once more to exit) before using '['/']'/'1'-'4', which only
-	// work outside the form zone.
-	for range 3 {
-		app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyTab})
-	}
-	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")}) // -> Collections mode
-	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")}) // -> PanelCollections
+	// lazycurl now starts on the [0] Request panel with the scratch
+	// request; jump straight to [2] Collections via the digit shortcut
+	// (always available while not mid-insert).
+	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
 
-	// 1. Create collection "api".
-	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	// 1. Create collection "api" ('N', uppercase, since 'n' on the
+	// Collections panel now means "new request in the current collection").
+	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("N")})
 	msgs := runes("api")
 	msgs = append(msgs, tea.KeyMsg{Type: tea.KeyEnter})
 	app = runKeys(t, app, msgs...)
@@ -113,18 +108,17 @@ func TestPrimaryFlow(t *testing.T) {
 	if len(app.shell.Collections()) != 1 || app.shell.Collections()[0].Name != "api" {
 		t.Fatalf("expected collection 'api', got %+v", app.shell.Collections())
 	}
-	// reloadEnvironments happens on collection load, so the pre-seeded "dev"
-	// environment should now be visible.
+	// The pre-seeded "dev" environment becomes visible once the collection
+	// preview (which also reloads environments) is loaded.
 
-	// 2. Move focus to Requests panel and create a new request inline: 'n'
-	// appends an empty request and immediately enters its form zone, no
-	// separate edit-mode transition required.
-	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyTab})
+	// 2. 'n' creates a new request in the current collection and loads it
+	// directly into [0] Request, moving focus there.
 	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 
-	// Move to URL and type it -- the form now starts at Method; Name is no
-	// longer a form field.
-	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyTab}) // Method -> URL
+	// Move to URL and type it: the form starts at Method (normal state);
+	// 'j' moves to URL, enter starts insert.
+	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}) // Method -> URL
+	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyEnter})                     // start insert
 	urlMsgs := runes("{{host}}/ping")
 	app = runKeys(t, app, urlMsgs...)
 
@@ -145,13 +139,13 @@ func TestPrimaryFlow(t *testing.T) {
 		t.Fatalf("unexpected saved requests: %+v", requests)
 	}
 
-	// Exit the form back to the request list: 'E' (env switch) and the
-	// list's 'enter' (send) are list-zone-only bindings.
-	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyTab})      // URL -> content
-	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyTab})      // content -> exits to Response
-	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyShiftTab}) // Response -> back to Requests (list zone)
+	// The name-prompt overlay closed, but the URL field itself is still in
+	// insert state (never explicitly exited) -- esc before digit-key panel
+	// navigation, or "2" would be typed literally into the URL.
+	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyEsc})
 
-	// 3. Switch active environment to "dev".
+	// 3. Switch active environment to "dev" from the Collections panel.
+	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
 	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("E")})
 	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyEnter})
 
@@ -163,8 +157,10 @@ func TestPrimaryFlow(t *testing.T) {
 		t.Fatalf("expected active env 'dev', got %q", active)
 	}
 
-	// 4. Send the request.
-	app = runKeyChase(t, app, tea.KeyMsg{Type: tea.KeyEnter})
+	// 4. Back to the Request panel (still holding the saved "Ping"
+	// request) and send it.
+	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("0")})
+	app = runKeyChase(t, app, tea.KeyMsg{Type: tea.KeyCtrlR})
 
 	history := app.shell.History()
 	if len(history) != 1 {
@@ -180,21 +176,19 @@ func TestPrimaryFlow(t *testing.T) {
 		t.Fatalf("expected expanded URL, got %q", history[0].Request.URL)
 	}
 
-	// 5. Confirm history is browsable. Requests is in its list zone (a
-	// request is selected), so a bare tab would enter the form; jump via
-	// the numeric panel shortcuts instead.
-	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("4")}) // -> History
+	// 5. Confirm history is browsable.
+	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")}) // -> History
 	view := app.View()
 	if view == "" {
 		t.Fatal("expected non-empty view")
 	}
 }
 
-// TestAdhocInlineEditUpdatesScratchRequest exercises the Adhoc mode entry
-// point: the Editor panel's embedded form is always in its form zone (no
-// separate edit-mode transition), so typing immediately updates the shell's
-// in-memory scratch request without touching the collection store.
-func TestAdhocInlineEditUpdatesScratchRequest(t *testing.T) {
+// TestScratchInlineEditUpdatesScratchRequest exercises the collection-less
+// entry point: the [0] Request panel starts on the in-memory scratch
+// request, and typing (after entering insert on URL) immediately updates
+// it without touching the collection store.
+func TestScratchInlineEditUpdatesScratchRequest(t *testing.T) {
 	dir := t.TempDir()
 	colStore := collection.NewStore(filepath.Join(dir, "collections"))
 	envStore := environment.NewStore(filepath.Join(dir, "env"), filepath.Join(dir, "state.json"))
@@ -206,18 +200,15 @@ func TestAdhocInlineEditUpdatesScratchRequest(t *testing.T) {
 	}
 	app = runKeys(t, app, tea.WindowSizeMsg{Width: 120, Height: 40})
 
-	// App (and Shell) start in Adhoc mode by default, with the Editor
-	// panel's form already focused at its first field (Method -- Name is
-	// no longer part of the form; it's only requested at save time).
-	if app.shell.Mode() != shell.ModeAdhoc {
-		t.Fatalf("expected Adhoc mode by default, got %v", app.shell.Mode())
-	}
-
-	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyTab}) // Method -> URL
+	// App (and Shell) start on the [0] Request panel with the scratch
+	// request (Method -- Name is not part of the form; it's only
+	// requested at save time).
+	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}) // Method -> URL (normal)
+	app = runKeys(t, app, tea.KeyMsg{Type: tea.KeyEnter})                     // start insert
 	urlMsgs := runes("https://example.com/scratch")
 	app = runKeys(t, app, urlMsgs...)
 
-	req := app.shell.AdhocRequest()
+	req := app.shell.ScratchRequest()
 	if req.URL != "https://example.com/scratch" {
 		t.Fatalf("unexpected scratch request: %+v", req)
 	}

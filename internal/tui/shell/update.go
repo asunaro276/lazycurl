@@ -71,50 +71,25 @@ func (s *Shell) handleKey(msg tea.KeyMsg) tea.Cmd {
 	if s.overlay != overlayNone {
 		return s.handleOverlayKey(msg)
 	}
-	if s.inFormZone() {
-		return s.handleFormZoneKey(msg)
-	}
-
-	switch msg.String() {
-	case "ctrl+c":
+	if msg.String() == "ctrl+c" {
 		if s.sending {
 			s.cancel()
 			return nil
 		}
 		return func() tea.Msg { return QuitMsg{} }
-	case "q":
-		return func() tea.Msg { return QuitMsg{} }
-	case "?":
-		s.overlay = overlayHelp
-		return nil
-	case "[", "]":
-		s.toggleMode()
-		return nil
-	case "tab":
-		if s.focus == PanelRequests && s.reqZone == zoneList && s.requestIdx < len(s.requests) {
-			s.reqZone = zoneForm
-			s.loadEditorForCurrentTarget()
-			return nil
-		}
-		s.focusNext()
-		return nil
-	case "shift+tab":
-		s.focusPrev()
-		return nil
-	case "1", "2", "3", "4":
-		panels := s.panelsForMode()
-		n := int(msg.String()[0] - '1')
-		if n < len(panels) {
-			s.setFocus(panels[n])
-		}
-		return nil
+	}
+
+	if s.focus == PanelRequest {
+		return s.handleRequestKey(msg)
+	}
+
+	if cmd, ok := s.handleGlobalKey(msg); ok {
+		return cmd
 	}
 
 	switch s.focus {
 	case PanelCollections:
 		return s.handleCollectionsKey(msg)
-	case PanelRequests:
-		return s.handleRequestsKey(msg)
 	case PanelHistory:
 		return s.handleHistoryKey(msg)
 	case PanelResponse:
@@ -123,80 +98,50 @@ func (s *Shell) handleKey(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-// panelsForMode returns the ordered panel set navigable in the shell's
-// current mode: the 3-pane Adhoc layout, or the 4-pane Collections layout.
-func (s *Shell) panelsForMode() []Panel {
-	if s.mode == ModeAdhoc {
-		return []Panel{PanelEditor, PanelResponse, PanelHistory}
-	}
-	return []Panel{PanelCollections, PanelRequests, PanelResponse, PanelHistory}
-}
-
-func panelIndex(panels []Panel, p Panel) (int, bool) {
-	for i, x := range panels {
-		if x == p {
-			return i, true
-		}
-	}
-	return 0, false
-}
-
-func (s *Shell) focusNext() {
-	panels := s.panelsForMode()
-	idx, _ := panelIndex(panels, s.focus)
-	s.setFocus(panels[(idx+1)%len(panels)])
-}
-
-func (s *Shell) focusPrev() {
-	panels := s.panelsForMode()
-	idx, _ := panelIndex(panels, s.focus)
-	s.setFocus(panels[(idx-1+len(panels))%len(panels)])
-}
-
-// toggleMode switches between Adhoc and Collections, closing any open
-// overlay and resetting focus to the new mode's first panel unless the
-// current focus (e.g. Response/History) is still valid there.
-func (s *Shell) toggleMode() {
-	if s.mode == ModeAdhoc {
-		s.mode = ModeCollections
-	} else {
-		s.mode = ModeAdhoc
-	}
-	panels := s.panelsForMode()
-	if _, ok := panelIndex(panels, s.focus); !ok {
-		s.setFocus(panels[0])
-	}
-	s.overlay = overlayNone
-}
-
-// handleFormZoneKey routes keys to the embedded form.Editor while the
-// Requests/Editor panel's form zone has focus, bypassing the global
-// shortcuts handled above (which would otherwise steal characters meant
-// for text fields). Only ctrl+c stays global here; ctrl+s (save) and
-// ctrl+r (send) replace the bare `s`/`enter` bindings used outside the
-// form zone, since `enter` is needed for in-field editing (e.g. Body
-// newlines).
-func (s *Shell) handleFormZoneKey(msg tea.KeyMsg) tea.Cmd {
+// handleGlobalKey handles shortcuts available whenever no field is
+// capturing keystrokes: quit, help, and panel switching (tab/shift+tab/
+// 0-3). Returns ok=false if msg isn't one of these, so the caller can fall
+// through to panel-specific handling.
+func (s *Shell) handleGlobalKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	switch msg.String() {
-	case "ctrl+c":
-		if s.sending {
-			s.cancel()
-			return nil
-		}
-		return func() tea.Msg { return QuitMsg{} }
-	case "ctrl+s":
-		return s.saveFormZone()
-	case "ctrl+r":
-		return s.sendFormZone()
+	case "q":
+		return func() tea.Msg { return QuitMsg{} }, true
+	case "?":
+		s.overlay = overlayHelp
+		return nil, true
 	case "tab":
-		if s.editor.AtLastFocus() {
-			s.exitFormZoneForward()
-			return nil
-		}
+		s.focusNext()
+		return nil, true
 	case "shift+tab":
-		if s.editor.AtFirstFocus() {
-			s.exitFormZoneBackward()
-			return nil
+		s.focusPrev()
+		return nil, true
+	case "0", "1", "2", "3":
+		s.setFocus(Panel(msg.String()[0] - '0'))
+		return nil, true
+	}
+	return nil, false
+}
+
+func (s *Shell) focusNext() { s.setFocus(Panel((int(s.focus) + 1) % panelCount)) }
+func (s *Shell) focusPrev() { s.setFocus(Panel((int(s.focus) + panelCount - 1) % panelCount)) }
+
+// handleRequestKey handles all keys while the [0] Request panel has focus,
+// covering both its normal and insert (editor.Editing()) states. ctrl+s
+// (save) and ctrl+r (send) are available in both; panel-switch shortcuts
+// (0-3, tab, shift+tab, q, ?) only fire in normal state -- once the editor
+// is in insert, every other key is forwarded to it so it can be typed
+// literally.
+func (s *Shell) handleRequestKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "ctrl+s":
+		return s.saveRequestPanel()
+	case "ctrl+r":
+		return s.sendRequestPanel()
+	}
+
+	if !s.editor.Editing() {
+		if cmd, ok := s.handleGlobalKey(msg); ok {
+			return cmd
 		}
 	}
 
@@ -206,143 +151,114 @@ func (s *Shell) handleFormZoneKey(msg tea.KeyMsg) tea.Cmd {
 	return cmd
 }
 
-// exitFormZoneForward moves focus out of the form (past its last field) to
-// the next Shell panel, returning Collections' Requests panel to its list
-// zone for next time.
-func (s *Shell) exitFormZoneForward() {
-	if s.focus == PanelRequests {
-		s.reqZone = zoneList
-	}
-	s.focusNext()
-}
-
-// exitFormZoneBackward moves focus out of the form (before its first
-// field): back to the request list for Collections, or to the previous
-// Shell panel for Adhoc (which has no list zone).
-func (s *Shell) exitFormZoneBackward() {
-	if s.focus == PanelRequests {
-		s.reqZone = zoneList
-		return
-	}
-	s.focusPrev()
-}
-
-// saveFormZone persists the form's target request: to the selected
-// collection's `.http` file (Collections), or via the save-to-collection
-// overlay (Adhoc, which has no standalone file to write to). If the target
-// request has no name yet, it opens overlayRequestName to collect one first
-// and defers the actual save until the name is confirmed; a request that
-// already has a name skips the prompt.
-func (s *Shell) saveFormZone() tea.Cmd {
-	if s.mode == ModeAdhoc {
-		if strings.TrimSpace(s.adhocRequest.Name) == "" {
-			s.namingAdhoc = true
+// saveRequestPanel persists the [0] Request panel's target request: to the
+// selected collection's `.http` file (if it's already bound to one), or via
+// the save-to-collection overlay (if it's the collection-less scratch
+// request). If the target has no name yet, it opens overlayRequestName to
+// collect one first and defers the actual save until the name is
+// confirmed; a request that already has a name skips the prompt.
+func (s *Shell) saveRequestPanel() tea.Cmd {
+	if s.usingScratch {
+		if strings.TrimSpace(s.scratchRequest.Name) == "" {
 			s.overlay = overlayRequestName
 			s.input = ""
 			return nil
 		}
-		return s.beginAdhocSave()
+		return s.beginScratchSave()
 	}
 	if s.requestIdx < len(s.requests) && strings.TrimSpace(s.requests[s.requestIdx].Name) == "" {
-		s.namingAdhoc = false
 		s.overlay = overlayRequestName
 		s.input = ""
 		return nil
 	}
-	return s.saveCollectionsRequests()
+	return s.saveLoadedRequests()
 }
 
-// beginAdhocSave opens the save-to-collection overlay for the (now-named)
-// Adhoc scratch request.
-func (s *Shell) beginAdhocSave() tea.Cmd {
-	s.overlay = overlaySaveAdhoc
+// beginScratchSave opens the save-to-collection overlay for the (now-named)
+// scratch request.
+func (s *Shell) beginScratchSave() tea.Cmd {
+	s.overlay = overlaySaveTo
 	s.saveIdx = 0
 	return nil
 }
 
-// saveCollectionsRequests writes the selected collection's in-memory
-// requests to its `.http` file.
-func (s *Shell) saveCollectionsRequests() tea.Cmd {
-	if err := s.colStore.SaveRequests(s.currentCollectionName(), s.requests); err != nil {
+// saveLoadedRequests writes the loaded collection's in-memory requests to
+// its `.http` file.
+func (s *Shell) saveLoadedRequests() tea.Cmd {
+	if err := s.colStore.SaveRequests(s.loadedCollection, s.requests); err != nil {
 		return s.setStatus(err.Error())
 	}
 	return s.setStatus("")
 }
 
-// sendFormZone sends the form's target request: the selected Collections
-// request (with variable expansion), or the Adhoc scratch request as-is.
-func (s *Shell) sendFormZone() tea.Cmd {
-	if s.mode == ModeAdhoc {
-		return s.sendAdhocCurrent()
+// sendRequestPanel sends the [0] Request panel's target request: the loaded
+// collection request (with variable expansion), or the scratch request as-is.
+func (s *Shell) sendRequestPanel() tea.Cmd {
+	if s.usingScratch {
+		return s.sendScratchCurrent()
 	}
-	return s.sendCurrent()
+	return s.sendLoadedCurrent()
+}
+
+// collectionsCursorDown moves the Collections panel's flattened cursor one
+// row down: from a collection's header into its first request row, through
+// its request rows, then on to the next collection's header (which becomes
+// the newly-expanded accordion).
+func (s *Shell) collectionsCursorDown() {
+	if s.collectionReqIdx == -1 {
+		if len(s.previewRequests) > 0 {
+			s.collectionReqIdx = 0
+			return
+		}
+	} else if s.collectionReqIdx < len(s.previewRequests)-1 {
+		s.collectionReqIdx++
+		return
+	}
+	if s.collectionIdx < len(s.collections)-1 {
+		s.collectionIdx++
+		s.collectionReqIdx = -1
+		_ = s.reloadCollectionPreview()
+	}
+}
+
+// collectionsCursorUp is the reverse of collectionsCursorDown.
+func (s *Shell) collectionsCursorUp() {
+	if s.collectionReqIdx > 0 {
+		s.collectionReqIdx--
+		return
+	}
+	if s.collectionReqIdx == -1 {
+		if s.collectionIdx > 0 {
+			s.collectionIdx--
+			_ = s.reloadCollectionPreview()
+			s.collectionReqIdx = len(s.previewRequests) - 1
+		}
+		return
+	}
+	s.collectionReqIdx = -1
 }
 
 func (s *Shell) handleCollectionsKey(msg tea.KeyMsg) tea.Cmd {
 	switch msg.String() {
 	case "j", "down":
-		if s.collectionIdx < len(s.collections)-1 {
-			s.collectionIdx++
-			s.requestIdx = 0
-			if err := s.loadRequestsForCurrentCollection(); err != nil {
-				return s.setStatus(err.Error())
-			}
-			return s.setStatus("")
-		}
+		s.collectionsCursorDown()
 	case "k", "up":
-		if s.collectionIdx > 0 {
-			s.collectionIdx--
-			s.requestIdx = 0
-			if err := s.loadRequestsForCurrentCollection(); err != nil {
-				return s.setStatus(err.Error())
-			}
-			return s.setStatus("")
-		}
+		s.collectionsCursorUp()
 	case "enter":
-		s.setFocus(PanelRequests)
+		if s.collectionReqIdx >= 0 && s.collectionReqIdx < len(s.previewRequests) {
+			reqs := append([]httpfile.Request(nil), s.previewRequests...)
+			s.loadRequestIntoEditor(s.currentCollectionName(), reqs, s.collectionReqIdx)
+			s.setFocus(PanelRequest)
+		}
 	case "n":
+		return s.newRequestInCurrentCollection()
+	case "N":
 		s.overlay = overlayNewCollection
 		s.input = ""
-	case "E":
-		if s.currentCollectionName() != "" {
-			s.overlay = overlayEnvSelect
-		}
-	}
-	return nil
-}
-
-func (s *Shell) handleRequestsKey(msg tea.KeyMsg) tea.Cmd {
-	switch msg.String() {
-	case "j", "down":
-		if s.requestIdx < len(s.requests)-1 {
-			s.requestIdx++
-		}
-	case "k", "up":
-		if s.requestIdx > 0 {
-			s.requestIdx--
-		}
-	case "enter":
-		return s.sendCurrent()
-	case "n":
-		if s.currentCollectionName() == "" {
-			return s.setStatus("先にコレクションを作成してください")
-		}
-		s.requests = append(s.requests, httpfile.Request{Method: "GET"})
-		s.requestIdx = len(s.requests) - 1
-		s.reqZone = zoneForm
-		s.loadEditorForCurrentTarget()
-		return nil
 	case "c":
-		if s.requestIdx < len(s.requests) {
-			if err := s.colStore.DuplicateRequest(s.currentCollectionName(), s.requestIdx); err != nil {
-				return s.setStatus(err.Error())
-			}
-			if err := s.loadRequestsForCurrentCollection(); err != nil {
-				return s.setStatus(err.Error())
-			}
-		}
+		return s.duplicateCurrentPreviewRequest()
 	case "d", "x":
-		if s.requestIdx < len(s.requests) {
+		if s.collectionReqIdx >= 0 && s.collectionReqIdx < len(s.previewRequests) {
 			s.overlay = overlayConfirmDelete
 		}
 	case "E":
@@ -351,6 +267,34 @@ func (s *Shell) handleRequestsKey(msg tea.KeyMsg) tea.Cmd {
 		}
 	}
 	return nil
+}
+
+// newRequestInCurrentCollection creates an empty request in the currently
+// expanded collection, loads it directly into the [0] Request panel, and
+// moves focus there (it stays unsaved on disk until ctrl+s).
+func (s *Shell) newRequestInCurrentCollection() tea.Cmd {
+	name := s.currentCollectionName()
+	if name == "" {
+		return s.setStatus("先にコレクションを作成してください ('N')")
+	}
+	reqs := append([]httpfile.Request(nil), s.previewRequests...)
+	reqs = append(reqs, httpfile.Request{Method: "GET"})
+	s.loadRequestIntoEditor(name, reqs, len(reqs)-1)
+	s.setFocus(PanelRequest)
+	return nil
+}
+
+func (s *Shell) duplicateCurrentPreviewRequest() tea.Cmd {
+	if s.collectionReqIdx < 0 || s.collectionReqIdx >= len(s.previewRequests) {
+		return nil
+	}
+	if err := s.colStore.DuplicateRequest(s.currentCollectionName(), s.collectionReqIdx); err != nil {
+		return s.setStatus(err.Error())
+	}
+	if err := s.reloadCollectionPreview(); err != nil {
+		return s.setStatus(err.Error())
+	}
+	return s.setStatus("")
 }
 
 func (s *Shell) handleHistoryKey(msg tea.KeyMsg) tea.Cmd {
@@ -366,7 +310,6 @@ func (s *Shell) handleHistoryKey(msg tea.KeyMsg) tea.Cmd {
 	case "enter":
 		if s.historyIdx < len(s.history) {
 			s.viewingIdx = s.historyIdx
-			s.setFocus(PanelResponse)
 		}
 	}
 	return nil
@@ -414,7 +357,7 @@ func (s *Shell) handleOverlayKey(msg tea.KeyMsg) tea.Cmd {
 		switch msg.String() {
 		case "esc":
 			s.overlay = overlayNone
-			s.savingAdhoc = false
+			s.savingViaNewCollection = false
 		case "enter":
 			name := strings.TrimSpace(s.input)
 			var cmd tea.Cmd
@@ -429,14 +372,14 @@ func (s *Shell) handleOverlayKey(msg tea.KeyMsg) tea.Cmd {
 							s.collectionIdx = i
 						}
 					}
-					if s.savingAdhoc {
-						cmd = s.finishAdhocSave(name)
+					if s.savingViaNewCollection {
+						cmd = s.finishScratchSave(name)
 					} else {
-						_ = s.loadRequestsForCurrentCollection()
+						_ = s.reloadCollectionPreview()
 					}
 				}
 			}
-			s.savingAdhoc = false
+			s.savingViaNewCollection = false
 			s.overlay = overlayNone
 			return cmd
 		case "backspace":
@@ -450,7 +393,7 @@ func (s *Shell) handleOverlayKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		return nil
 
-	case overlaySaveAdhoc:
+	case overlaySaveTo:
 		switch msg.String() {
 		case "esc", "q":
 			s.overlay = overlayNone
@@ -464,13 +407,13 @@ func (s *Shell) handleOverlayKey(msg tea.KeyMsg) tea.Cmd {
 			}
 		case "enter":
 			if s.saveIdx == len(s.collections) {
-				s.savingAdhoc = true
+				s.savingViaNewCollection = true
 				s.overlay = overlayNewCollection
 				s.input = ""
 				return nil
 			}
 			if s.saveIdx < len(s.collections) {
-				cmd := s.finishAdhocSave(s.collections[s.saveIdx].Name)
+				cmd := s.finishScratchSave(s.collections[s.saveIdx].Name)
 				s.overlay = overlayNone
 				return cmd
 			}
@@ -482,24 +425,22 @@ func (s *Shell) handleOverlayKey(msg tea.KeyMsg) tea.Cmd {
 		switch msg.String() {
 		case "esc":
 			s.overlay = overlayNone
-			s.namingAdhoc = false
 		case "enter":
 			name := strings.TrimSpace(s.input)
 			if name == "" {
 				return nil
 			}
-			if s.namingAdhoc {
-				s.adhocRequest.Name = name
+			if s.usingScratch {
+				s.scratchRequest.Name = name
 				s.editor.Name = name
-				s.namingAdhoc = false
-				return s.beginAdhocSave()
+				return s.beginScratchSave()
 			}
 			if s.requestIdx < len(s.requests) {
 				s.requests[s.requestIdx].Name = name
 			}
 			s.editor.Name = name
 			s.overlay = overlayNone
-			return s.saveCollectionsRequests()
+			return s.saveLoadedRequests()
 		case "backspace":
 			if len(s.input) > 0 {
 				s.input = s.input[:len(s.input)-1]
@@ -515,9 +456,10 @@ func (s *Shell) handleOverlayKey(msg tea.KeyMsg) tea.Cmd {
 		switch msg.String() {
 		case "y":
 			var cmd tea.Cmd
-			if err := s.colStore.DeleteRequest(s.currentCollectionName(), s.requestIdx); err != nil {
+			name := s.currentCollectionName()
+			if err := s.colStore.DeleteRequest(name, s.collectionReqIdx); err != nil {
 				cmd = s.setStatus(err.Error())
-			} else if err := s.loadRequestsForCurrentCollection(); err != nil {
+			} else if err := s.reloadCollectionPreview(); err != nil {
 				cmd = s.setStatus(err.Error())
 			}
 			s.overlay = overlayNone
@@ -530,11 +472,11 @@ func (s *Shell) handleOverlayKey(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-// finishAdhocSave appends the Adhoc scratch request to collectionName's
-// `.http` file, then switches to Collections mode with that collection and
-// the newly-saved request selected, and resets the scratch request.
-func (s *Shell) finishAdhocSave(collectionName string) tea.Cmd {
-	if err := s.colStore.CreateRequest(collectionName, s.adhocRequest); err != nil {
+// finishScratchSave appends the scratch request to collectionName's `.http`
+// file, then focuses the Collections panel on that collection with the
+// newly-saved request selected, and resets the scratch request to empty.
+func (s *Shell) finishScratchSave(collectionName string) tea.Cmd {
+	if err := s.colStore.CreateRequest(collectionName, s.scratchRequest); err != nil {
 		return s.setStatus(err.Error())
 	}
 	for i, c := range s.collections {
@@ -542,13 +484,13 @@ func (s *Shell) finishAdhocSave(collectionName string) tea.Cmd {
 			s.collectionIdx = i
 		}
 	}
-	if err := s.loadRequestsForCurrentCollection(); err != nil {
+	if err := s.reloadCollectionPreview(); err != nil {
 		return s.setStatus(err.Error())
 	}
-	s.requestIdx = max0(len(s.requests) - 1)
-	s.adhocRequest = httpfile.Request{Method: "GET"}
-	s.mode = ModeCollections
-	s.setFocus(PanelRequests)
+	s.collectionReqIdx = max0(len(s.previewRequests) - 1)
+	s.scratchRequest = httpfile.Request{Method: "GET"}
+	s.usingScratch = true
+	s.setFocus(PanelCollections)
 	return nil
 }
 
@@ -558,18 +500,19 @@ func (s *Shell) cancel() {
 	}
 }
 
-// sendCurrent expands the selected request's variables against the active
-// environment and, if fully defined, executes it via curl asynchronously.
-func (s *Shell) sendCurrent() tea.Cmd {
+// sendLoadedCurrent expands the loaded collection request's variables
+// against its active environment and, if fully defined, executes it via
+// curl asynchronously.
+func (s *Shell) sendLoadedCurrent() tea.Cmd {
 	if s.sending || s.requestIdx >= len(s.requests) {
 		return nil
 	}
-	collectionName := s.currentCollectionName()
+	collectionName := s.loadedCollection
 	req := s.requests[s.requestIdx]
 
 	vars := map[string]string{}
-	if envName := s.activeEnvName(); envName != "" {
-		v, err := s.envStore.Load(collectionName, envName)
+	if activeEnv, err := s.envStore.ActiveEnvironment(collectionName); err == nil && activeEnv != "" {
+		v, err := s.envStore.Load(collectionName, activeEnv)
 		if err != nil {
 			return s.setStatus(err.Error())
 		}
@@ -599,14 +542,13 @@ func (s *Shell) sendCurrent() tea.Cmd {
 	}
 }
 
-// sendAdhocCurrent executes the Adhoc scratch request as-is, with no
-// {{variable}} expansion (Adhoc requests aren't tied to a collection or
-// environment).
-func (s *Shell) sendAdhocCurrent() tea.Cmd {
+// sendScratchCurrent executes the scratch request as-is, with no
+// {{variable}} expansion (it isn't tied to a collection or environment).
+func (s *Shell) sendScratchCurrent() tea.Cmd {
 	if s.sending {
 		return nil
 	}
-	req := s.adhocRequest
+	req := s.scratchRequest
 	if strings.TrimSpace(req.URL) == "" {
 		return s.setStatus("URLを入力してください")
 	}

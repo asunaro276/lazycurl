@@ -28,7 +28,8 @@ const (
 
 var tabLabels = []string{"Params", "Headers", "Auth", "Body"}
 
-// focusZone identifies which top-level part of the form has keyboard focus.
+// focusZone identifies which top-level part of the form the normal-state
+// cursor rests on.
 type focusZone int
 
 const (
@@ -69,9 +70,14 @@ type Editor struct {
 	pragK      bool
 	pragNoRdir bool
 
-	focus     focusZone
-	tab       tab
-	nameFocus bool
+	focus focusZone
+	// editing is the form's insert state: false (normal) means movement
+	// keys (j/k, h/l, [/]) navigate between Method/URL/tab content and
+	// switch tabs without touching any value; true (insert) means the
+	// field at e.focus owns keystrokes. This mirrors KVGrid's own
+	// editing/non-editing split, raised one level to cover the whole form.
+	editing bool
+	tab     tab
 
 	width, height int
 	err           error
@@ -172,30 +178,30 @@ func (e *Editor) SetSize(w, h int) {
 	e.body.SetHeight(max(3, h-10))
 }
 
-func (e *Editor) blurAll() {
-	e.url.Blur()
-	e.params.Blur()
-	e.headers.Blur()
-	e.authUser.Blur()
-	e.authPass.Blur()
-	e.authToken.Blur()
-	e.body.Blur()
-	e.pragTO.Blur()
-}
-
-// FocusNext cycles top-level focus: Method -> URL -> content (active tab)
-// -> Method.
+// FocusNext moves the normal-state cursor forward: Method -> URL -> content
+// -> Method. It never touches insert/blur state -- fields only receive
+// keyboard input once enterInsert focuses them explicitly.
 func (e *Editor) FocusNext() {
-	e.blurAll()
 	switch e.focus {
 	case focusMethod:
 		e.focus = focusURL
-		e.url.Focus()
 	case focusURL:
 		e.focus = focusContent
-		e.focusActiveTab()
 	case focusContent:
 		e.focus = focusMethod
+	}
+}
+
+// FocusPrev moves the normal-state cursor backward, the reverse of
+// FocusNext.
+func (e *Editor) FocusPrev() {
+	switch e.focus {
+	case focusMethod:
+		e.focus = focusContent
+	case focusURL:
+		e.focus = focusMethod
+	case focusContent:
+		e.focus = focusURL
 	}
 }
 
@@ -229,18 +235,37 @@ func (e *Editor) focusAuthField() {
 	}
 }
 
-// SetTab switches the active lower panel.
+// SetTab switches the active lower panel and resets its Auth sub-state.
+// Insert focus, if any, is left to the caller (enterInsert/updateEditing) --
+// SetTab itself never grabs or releases keyboard input.
 func (e *Editor) SetTab(t tab) {
 	e.tab = t
 	e.authField = 0
-	if e.focus == focusContent {
-		e.blurAll()
+}
+
+// Editing reports whether some part of the form -- a text field, the
+// textarea, an Auth credential, or a KVGrid cell -- currently owns
+// keystrokes (the form's insert state). Panel-level shortcuts must not fire
+// while this is true.
+func (e Editor) Editing() bool { return e.editing }
+
+// enterInsert begins the insert state for whichever field the normal-state
+// cursor currently rests on. Method has no insert state of its own -- its
+// value changes directly via h/l while normal, mirroring KVGrid's enabled
+// checkbox column -- so entering insert there is a no-op.
+func (e *Editor) enterInsert() {
+	switch e.focus {
+	case focusURL:
+		e.editing = true
+		e.url.Focus()
+	case focusContent:
+		e.editing = true
 		e.focusActiveTab()
 	}
 }
 
-// Update handles a bubbletea message. ctrl-e opens $EDITOR when the Body
-// tab has focus.
+// Update handles a bubbletea message, dispatching to the form's normal or
+// insert state.
 func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 	switch msg := msg.(type) {
 	case editorDoneMsg:
@@ -252,89 +277,105 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 		return e, nil
 
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "tab":
-			if e.focus == focusContent && e.tab == TabAuth && e.editingAuthField() {
-				break
-			}
-			e.FocusNext()
-			return e, nil
-		case "[", "]":
-			if e.focus == focusContent && !e.isTypingSomewhere() {
-				n := tab(len(tabLabels))
-				if msg.String() == "]" {
-					e.SetTab((e.tab + 1) % n)
-				} else {
-					e.SetTab((e.tab - 1 + n) % n)
-				}
-				return e, nil
-			}
-		case "ctrl+e":
-			if e.focus == focusContent && e.tab == TabBody {
-				return e, e.openExternalEditor()
-			}
+		if e.editing {
+			return e.updateEditing(msg)
 		}
+		return e.updateNormal(msg)
+	}
+	return e, nil
+}
+
+// updateNormal handles the form's non-insert state: movement between
+// Method/URL/content, Method's direct h/l value cycling, tab switching, and
+// enter to begin insert on the focused field.
+func (e Editor) updateNormal(msg tea.KeyMsg) (Editor, tea.Cmd) {
+	switch msg.String() {
+	case "j", "down":
+		e.FocusNext()
+	case "k", "up":
+		e.FocusPrev()
+	case "h", "left":
+		if e.focus == focusMethod {
+			e.methodIdx = (e.methodIdx - 1 + len(Methods)) % len(Methods)
+		}
+	case "l", "right":
+		if e.focus == focusMethod {
+			e.methodIdx = (e.methodIdx + 1) % len(Methods)
+		}
+	case "[", "]":
+		n := tab(len(tabLabels))
+		if msg.String() == "]" {
+			e.SetTab((e.tab + 1) % n)
+		} else {
+			e.SetTab((e.tab - 1 + n) % n)
+		}
+	case "enter":
+		e.enterInsert()
+	}
+	return e, nil
+}
+
+// updateEditing handles the form's insert state: keystrokes belong to
+// whichever field is focused, except esc, which pops exactly one level
+// (KVGrid cell-edit -> KVGrid row nav -> form normal; Auth credential ->
+// Auth type selector -> form normal) per field.
+func (e Editor) updateEditing(msg tea.KeyMsg) (Editor, tea.Cmd) {
+	if msg.String() == "ctrl+e" && e.focus == focusContent && e.tab == TabBody {
+		return e, e.openExternalEditor()
 	}
 
 	switch e.focus {
-	case focusMethod:
-		if km, ok := msg.(tea.KeyMsg); ok {
-			switch km.String() {
-			case "left", "h":
-				e.methodIdx = (e.methodIdx - 1 + len(Methods)) % len(Methods)
-			case "right", "l":
-				e.methodIdx = (e.methodIdx + 1) % len(Methods)
-			}
-		}
-		return e, nil
-
 	case focusURL:
+		if msg.String() == "esc" {
+			e.editing = false
+			e.url.Blur()
+			return e, nil
+		}
 		var cmd tea.Cmd
 		e.url, cmd = e.url.Update(msg)
 		return e, cmd
 
 	case focusContent:
-		return e.updateContent(msg)
+		return e.updateContentEditing(msg)
 	}
 	return e, nil
 }
 
-func (e *Editor) editingAuthField() bool {
-	return e.tab == TabAuth && e.authField > 0
-}
-
-// AtFirstFocus reports whether the Method field currently has top-level
-// focus -- the first stop in the form's focus chain. Used by callers that
-// embed the form in a larger focus chain (e.g. a panel with its own list
-// zone before the form) to decide when shift+tab should exit the form.
-func (e Editor) AtFirstFocus() bool { return e.focus == focusMethod }
-
-// AtLastFocus reports whether the content zone (Params/Headers/Auth/Body)
-// currently has top-level focus and isn't itself mid-field-edit in a way
-// that still wants to consume tab (e.g. editing an Auth credential). Used
-// by callers to decide when tab should exit the form to whatever comes
-// after it, rather than wrapping back to Name.
-func (e Editor) AtLastFocus() bool {
-	return e.focus == focusContent && !e.editingAuthField()
-}
-
-func (e *Editor) isTypingSomewhere() bool {
-	return e.tab == TabAuth && e.editingAuthField()
-}
-
-func (e Editor) updateContent(msg tea.Msg) (Editor, tea.Cmd) {
+func (e Editor) updateContentEditing(msg tea.KeyMsg) (Editor, tea.Cmd) {
 	switch e.tab {
 	case TabParams:
+		if msg.String() == "esc" && !e.params.Editing() {
+			e.editing = false
+			e.params.Blur()
+			return e, nil
+		}
 		var cmd tea.Cmd
 		e.params, cmd = e.params.Update(msg)
 		return e, cmd
+
 	case TabHeaders:
+		if msg.String() == "esc" && !e.headers.Editing() {
+			e.editing = false
+			e.headers.Blur()
+			return e, nil
+		}
 		var cmd tea.Cmd
 		e.headers, cmd = e.headers.Update(msg)
 		return e, cmd
+
 	case TabAuth:
+		if msg.String() == "esc" && e.authField == 0 {
+			e.editing = false
+			return e, nil
+		}
 		return e.updateAuth(msg)
+
 	case TabBody:
+		if msg.String() == "esc" {
+			e.editing = false
+			e.body.Blur()
+			return e, nil
+		}
 		var cmd tea.Cmd
 		e.body, cmd = e.body.Update(msg)
 		return e, cmd
@@ -387,7 +428,9 @@ func (e Editor) updateAuth(msg tea.Msg) (Editor, tea.Cmd) {
 			return e, nil
 		}
 		e.authField = 0
-		e.blurAll()
+		e.authUser.Blur()
+		e.authPass.Blur()
+		e.authToken.Blur()
 		return e, nil
 	case "down":
 		if authTypes[e.authTypeI] == httpfile.AuthBasic && e.authField < 2 {

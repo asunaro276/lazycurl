@@ -1,6 +1,6 @@
-// Package shell implements lazycurl's TUI shell: the collection/request/
-// response/history panel layout, lazygit-compatible keybindings, and
-// colored status/method badges.
+// Package shell implements lazycurl's TUI shell: the always-visible
+// Request/Response/Collections/History panel grid, lazygit-compatible
+// keybindings, and colored status/method badges.
 package shell
 
 import (
@@ -16,44 +16,26 @@ import (
 	"github.com/asunaro276/lazycurl/internal/tui/form"
 )
 
-// Mode identifies which top-level screen the shell shows: the
-// collection-free Adhoc request builder, or the full Collections browser.
-type Mode int
-
-const (
-	ModeAdhoc Mode = iota
-	ModeCollections
-)
-
-// Panel identifies one of the shell's navigable panels.
+// Panel identifies one of the shell's four always-visible panels, fixed in
+// both number and position: [0] Request (top-left), [1] Response
+// (top-right), [2] Collections (bottom-left), [3] History (bottom-right).
 type Panel int
 
 const (
-	PanelCollections Panel = iota
-	PanelRequests
+	PanelRequest Panel = iota
 	PanelResponse
+	PanelCollections
 	PanelHistory
-	PanelEditor // Adhoc mode's request-editor panel
 )
+
+const panelCount = 4
 
 var panelLabels = map[Panel]string{
-	PanelCollections: "Collections",
-	PanelRequests:    "Requests",
+	PanelRequest:     "Request",
 	PanelResponse:    "Response",
+	PanelCollections: "Collections",
 	PanelHistory:     "History",
-	PanelEditor:      "Editor",
 }
-
-// requestZone identifies which part of the Collections mode Requests panel
-// currently has focus: the request list, or the embedded editor form for
-// the selected request. Adhoc mode's Editor panel has no list zone -- it is
-// always in the form zone once focused.
-type requestZone int
-
-const (
-	zoneList requestZone = iota
-	zoneForm
-)
 
 // HistoryEntry records one executed request/response pair.
 type HistoryEntry struct {
@@ -73,25 +55,49 @@ const (
 	overlayEnvSelect
 	overlayNewCollection
 	overlayConfirmDelete
-	overlaySaveAdhoc
+	overlaySaveTo
 	overlayRequestName
 )
 
 // QuitMsg is emitted when the user requests to quit.
 type QuitMsg struct{}
 
-// Shell is the main panel-based TUI: Collections, Requests, Response, and
-// History panels, navigated with lazygit-style keybindings.
+// Shell is the main panel-based TUI: Request, Response, Collections, and
+// History panels, always shown together and navigated with lazygit-style
+// keybindings.
 type Shell struct {
 	colStore *collection.Store
 	envStore *environment.Store
 	executor *curlexec.Executor
 
 	collections   []collection.Collection
-	collectionIdx int
+	collectionIdx int // Collections panel: which collection header the cursor rests on; that collection is always the one shown expanded
 
-	requests   []httpfile.Request
-	requestIdx int
+	// collectionReqIdx is the Collections panel's cursor within the
+	// expanded collection's request list: -1 means the cursor sits on the
+	// collection's own header row, >=0 indexes into previewRequests.
+	collectionReqIdx int
+	previewRequests  []httpfile.Request // requests of collections[collectionIdx], reloaded whenever collectionIdx changes
+
+	// requests/requestIdx/loadedCollection describe whichever request is
+	// currently loaded into the [0] Request panel's editor, when it
+	// belongs to a collection: requests is that collection's full request
+	// list (freshly loaded so ctrl+s can write the whole file back),
+	// requestIdx is the loaded request's position within it, and
+	// loadedCollection is the owning collection's name. These are
+	// independent of collectionIdx/collectionReqIdx, since browsing the
+	// Collections panel must not disturb a request already loaded for
+	// editing.
+	requests         []httpfile.Request
+	requestIdx       int
+	loadedCollection string
+
+	// scratchRequest is the in-memory request that doesn't belong to any
+	// collection; usingScratch reports whether the [0] Request panel's
+	// editor currently reflects it (true) or a loaded collection request
+	// (false, see above).
+	scratchRequest httpfile.Request
+	usingScratch   bool
 
 	history    []HistoryEntry
 	historyIdx int
@@ -100,19 +106,19 @@ type Shell struct {
 	envNames []string
 	envIdx   int
 
-	mode         Mode
-	adhocRequest httpfile.Request // Adhoc mode's unsaved scratch request
-	saveIdx      int              // selection index within overlaySaveAdhoc
-	savingAdhoc  bool             // true while overlayNewCollection is servicing an Adhoc save
-	namingAdhoc  bool             // true while overlayRequestName is servicing an Adhoc save (vs. a Collections save)
+	saveIdx int // selection index within overlaySaveTo
 
-	// editor is the embedded request-editing form shown inline in the
-	// Requests panel (Collections, when reqZone==zoneForm) or the Editor
-	// panel (Adhoc, always). It mirrors whichever request is currently
-	// selected; edits are synced back on every keystroke (see
-	// syncEditorToTarget).
-	editor  form.Editor
-	reqZone requestZone // Collections' Requests panel: zoneList or zoneForm
+	// savingViaNewCollection is true while overlayNewCollection is
+	// servicing a collection-less request's save-to-new-collection flow,
+	// as opposed to a plain "create a collection" invocation from the
+	// Collections panel.
+	savingViaNewCollection bool
+
+	// editor is the single embedded request-editing form, shown inline in
+	// the [0] Request panel. It mirrors whichever request is currently
+	// loaded (scratchRequest or requests[requestIdx]); edits are synced
+	// back on every keystroke (see syncEditorToTarget).
+	editor form.Editor
 
 	focus   Panel
 	overlay overlay
@@ -130,75 +136,55 @@ type Shell struct {
 // New constructs a Shell and loads the initial collection list.
 func New(colStore *collection.Store, envStore *environment.Store, executor *curlexec.Executor) (*Shell, error) {
 	s := &Shell{
-		colStore:     colStore,
-		envStore:     envStore,
-		executor:     executor,
-		mode:         ModeAdhoc,
-		focus:        PanelEditor,
-		viewingIdx:   -1,
-		adhocRequest: httpfile.Request{Method: "GET"},
+		colStore:         colStore,
+		envStore:         envStore,
+		executor:         executor,
+		focus:            PanelRequest,
+		viewingIdx:       -1,
+		collectionReqIdx: -1,
+		usingScratch:     true,
+		scratchRequest:   httpfile.Request{Method: "GET"},
 	}
 	if err := s.reloadCollections(); err != nil {
 		return nil, err
 	}
 	if len(s.collections) > 0 {
-		if err := s.loadRequestsForCurrentCollection(); err != nil {
+		if err := s.reloadCollectionPreview(); err != nil {
 			return nil, err
 		}
 	}
-	s.editor = form.FromRequest(s.adhocRequest)
+	s.editor = form.FromRequest(s.scratchRequest)
 	return s, nil
 }
 
-// setFocus moves Shell-level panel focus to p, resetting per-panel
-// sub-focus state so the Requests/Editor panel always (re-)enters at its
-// default starting point: the request list (Collections) or the embedded
-// form loaded fresh from its target request (Adhoc, and Collections once
-// the form zone is (re)entered explicitly via loadEditorForCurrentTarget).
+// setFocus moves Shell-level panel focus to p. Unlike the old mode-based
+// shell, this never reloads or resets the [0] Request panel's editor --
+// whatever request it holds (scratch or a loaded collection request)
+// persists across focus changes, since Request is no longer tied 1:1 to
+// whichever collection is being browsed in Collections.
 func (s *Shell) setFocus(p Panel) {
 	s.focus = p
-	switch p {
-	case PanelRequests:
-		s.reqZone = zoneList
-	case PanelEditor:
-		s.loadEditorForCurrentTarget()
-	}
 }
 
-// inFormZone reports whether the Requests/Editor panel's embedded form
-// currently owns keyboard focus: always true for Adhoc's Editor panel
-// (which has no list zone), true for Collections' Requests panel only once
-// its form zone has been entered.
-func (s *Shell) inFormZone() bool {
-	switch s.focus {
-	case PanelEditor:
-		return true
-	case PanelRequests:
-		return s.reqZone == zoneForm
-	}
-	return false
-}
-
-// loadEditorForCurrentTarget (re)loads s.editor from whichever request it
-// should currently reflect: the Adhoc scratch request, or the selected
-// Collections request. The reloaded form always starts at its first field.
-func (s *Shell) loadEditorForCurrentTarget() {
-	if s.mode == ModeAdhoc {
-		s.editor = form.FromRequest(s.adhocRequest)
-		return
-	}
-	if s.requestIdx >= 0 && s.requestIdx < len(s.requests) {
-		s.editor = form.FromRequest(s.requests[s.requestIdx])
-	}
+// loadRequestIntoEditor loads req (found at index idx within reqs, the
+// full freshly-loaded request list of collectionName) into the [0] Request
+// panel, binding future ctrl+s/ctrl+r to that collection and index.
+func (s *Shell) loadRequestIntoEditor(collectionName string, reqs []httpfile.Request, idx int) {
+	s.requests = reqs
+	s.requestIdx = idx
+	s.loadedCollection = collectionName
+	s.usingScratch = false
+	s.editor = form.FromRequest(s.requests[idx])
 }
 
 // syncEditorToTarget writes the live form state back into the in-memory
-// request it reflects, keeping the Requests list summary and eventual
-// ctrl+s disk saves up to date as the user types.
+// request it reflects (the scratch request, or the loaded collection
+// request), keeping it up to date as the user types. Nothing is written to
+// disk until ctrl+s.
 func (s *Shell) syncEditorToTarget() {
 	req := s.editor.ToRequest()
-	if s.mode == ModeAdhoc {
-		s.adhocRequest = req
+	if s.usingScratch {
+		s.scratchRequest = req
 		return
 	}
 	if s.requestIdx >= 0 && s.requestIdx < len(s.requests) {
@@ -225,10 +211,16 @@ func (s *Shell) currentCollectionName() string {
 	return s.collections[s.collectionIdx].Name
 }
 
-func (s *Shell) loadRequestsForCurrentCollection() error {
+// reloadCollectionPreview (re)loads previewRequests from whichever
+// collection the Collections panel cursor rests on (collectionIdx), for
+// accordion rendering and duplicate/delete/new-request actions. It also
+// refreshes the environment list, which is likewise scoped to the browsed
+// collection.
+func (s *Shell) reloadCollectionPreview() error {
 	name := s.currentCollectionName()
 	if name == "" {
-		s.requests = nil
+		s.previewRequests = nil
+		s.collectionReqIdx = -1
 		s.envNames = nil
 		return nil
 	}
@@ -236,9 +228,9 @@ func (s *Shell) loadRequestsForCurrentCollection() error {
 	if err != nil {
 		return err
 	}
-	s.requests = reqs
-	if s.requestIdx >= len(reqs) {
-		s.requestIdx = max0(len(reqs) - 1)
+	s.previewRequests = reqs
+	if s.collectionReqIdx >= len(reqs) {
+		s.collectionReqIdx = len(reqs) - 1
 	}
 	return s.reloadEnvironments()
 }
@@ -286,24 +278,22 @@ func max0(n int) int {
 // Collections returns the currently loaded collection list.
 func (s *Shell) Collections() []collection.Collection { return s.collections }
 
-// Requests returns the requests of the currently selected collection.
-func (s *Shell) Requests() []httpfile.Request { return s.requests }
-
 // History returns the executed request/response history, oldest first.
 func (s *Shell) History() []HistoryEntry { return s.history }
 
-// Mode returns the shell's current top-level mode (Adhoc or Collections).
-func (s *Shell) Mode() Mode { return s.mode }
+// ScratchRequest returns the in-memory request that doesn't belong to any
+// collection.
+func (s *Shell) ScratchRequest() httpfile.Request { return s.scratchRequest }
 
-// AdhocRequest returns the in-memory Adhoc scratch request.
-func (s *Shell) AdhocRequest() httpfile.Request { return s.adhocRequest }
-
-// SetAdhocRequest replaces the in-memory Adhoc scratch request directly
-// (used by tests as a convenience seam; normal editing goes through the
-// embedded form and syncEditorToTarget instead). It never touches disk --
-// the request stays unsaved until the user saves it to a collection.
-func (s *Shell) SetAdhocRequest(req httpfile.Request) {
-	s.adhocRequest = req
+// SetScratchRequest replaces the in-memory scratch request directly (used
+// by tests as a convenience seam; normal editing goes through the embedded
+// form and syncEditorToTarget instead). It never touches disk -- the
+// request stays unsaved until the user saves it to a collection.
+func (s *Shell) SetScratchRequest(req httpfile.Request) {
+	s.scratchRequest = req
+	if s.usingScratch {
+		s.editor = form.FromRequest(req)
+	}
 }
 
 // Init satisfies tea.Model; Shell has no async startup work.

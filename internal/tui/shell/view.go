@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/asunaro276/lazycurl/internal/curlexec"
 	"github.com/asunaro276/lazycurl/internal/tui/styles"
@@ -13,7 +14,9 @@ import (
 var (
 	panelBorderFocused   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("62"))
 	panelBorderUnfocused = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240"))
+	panelBorderDimmed    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("238"))
 	panelTitle           = lipgloss.NewStyle().Bold(true)
+	panelTitleDimmed     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("240"))
 	listSelected         = lipgloss.NewStyle().Reverse(true)
 	overlayBox           = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1, 2)
 	statusBarStyle       = lipgloss.NewStyle().Faint(true)
@@ -21,35 +24,86 @@ var (
 )
 
 // View renders the full shell: the always-visible 2x2 panel grid and a
-// status bar, with any active overlay drawn on top.
+// status bar, with any active overlay composited on top (centered, over a
+// dimmed background) via compositeOverlay. If the overlay's rendered size
+// doesn't fit the terminal, it falls back to a fullscreen render of the
+// overlay alone.
 func (s *Shell) View() string {
 	if s.width == 0 {
 		return "loading..."
 	}
 
-	main := lipgloss.JoinVertical(lipgloss.Left, s.viewGrid(), s.viewStatusBar())
+	if s.overlay == overlayNone {
+		return lipgloss.JoinVertical(lipgloss.Left, s.viewGrid(false), s.viewStatusBar())
+	}
 
+	background := lipgloss.JoinVertical(lipgloss.Left, s.viewGrid(true), s.viewStatusBar())
+	overlayContent := overlayBox.Render(s.currentOverlayBody())
+	return compositeOverlay(background, overlayContent, s.width, s.height)
+}
+
+// currentOverlayBody returns the raw (unboxed) content for whichever overlay
+// is currently active.
+func (s *Shell) currentOverlayBody() string {
 	switch s.overlay {
 	case overlayHelp:
-		return overlayBox.Render(s.viewHelp())
+		return s.viewHelp()
 	case overlayEnvSelect:
-		return overlayBox.Render(s.viewEnvSelect())
+		return s.viewEnvSelect()
 	case overlayNewCollection:
-		return overlayBox.Render("新規コレクション名:\n\n> " + s.input + "_")
+		return "新規コレクション名:\n\n> " + s.input + "_"
 	case overlaySaveTo:
-		return overlayBox.Render(s.viewSaveTo())
+		return s.viewSaveTo()
 	case overlayRequestName:
-		return overlayBox.Render(s.viewRequestName())
+		return s.viewRequestName()
 	case overlayConfirmDelete:
-		return overlayBox.Render(fmt.Sprintf("リクエスト %q を削除しますか? (y/n)", s.currentPreviewRequestName()))
+		return fmt.Sprintf("リクエスト %q を削除しますか? (y/n)", s.currentPreviewRequestName())
 	}
-	return main
+	return ""
+}
+
+// compositeOverlay centers overlayContent over background. If overlayContent
+// doesn't fit within termWidth/termHeight, background is discarded and
+// overlayContent is returned as-is (a fullscreen fallback for narrow
+// terminals). Splicing uses ansi.Cut, which is display-width-aware and
+// preserves ANSI escape sequences, so already-colored panel content isn't
+// corrupted by the cut.
+func compositeOverlay(background, overlayContent string, termWidth, termHeight int) string {
+	ovLines := strings.Split(overlayContent, "\n")
+	ovWidth := 0
+	for _, l := range ovLines {
+		if w := ansi.StringWidth(l); w > ovWidth {
+			ovWidth = w
+		}
+	}
+	ovHeight := len(ovLines)
+	if ovWidth > termWidth || ovHeight > termHeight {
+		return overlayContent
+	}
+
+	bgLines := strings.Split(background, "\n")
+	offsetX := (termWidth - ovWidth) / 2
+	offsetY := (termHeight - ovHeight) / 2
+
+	for i, ol := range ovLines {
+		bgIdx := offsetY + i
+		if bgIdx < 0 || bgIdx >= len(bgLines) {
+			continue
+		}
+		bg := bgLines[bgIdx]
+		left := ansi.Cut(bg, 0, offsetX)
+		right := ansi.Cut(bg, offsetX+ansi.StringWidth(ol), len(bg))
+		bgLines[bgIdx] = left + ol + right
+	}
+	return strings.Join(bgLines, "\n")
 }
 
 // viewGrid renders the shell's fixed 2x2 panel layout: [0] Request and
 // [1] Response on top, [2] Collections and [3] History on the bottom. No
-// mode or layout variant exists -- all four panels are always shown.
-func (s *Shell) viewGrid() string {
+// mode or layout variant exists -- all four panels are always shown. When
+// dimmed is true (an overlay is active above it), panels render with a muted
+// style instead of their normal focused/unfocused colors.
+func (s *Shell) viewGrid(dimmed bool) string {
 	leftWidth := s.width / 2
 	rightWidth := s.width - leftWidth - 1
 	topHeight := s.height * 2 / 3
@@ -57,12 +111,12 @@ func (s *Shell) viewGrid() string {
 
 	s.editor.SetSize(leftWidth-4, topHeight-4)
 
-	requestPanel := s.renderPanel(PanelRequest, leftWidth, topHeight, s.editor.View())
-	responsePanel := s.renderPanel(PanelResponse, rightWidth, topHeight, s.viewResponse())
+	requestPanel := s.renderPanel(PanelRequest, leftWidth, topHeight, s.editor.View(), dimmed)
+	responsePanel := s.renderPanel(PanelResponse, rightWidth, topHeight, s.viewResponse(), dimmed)
 	top := lipgloss.JoinHorizontal(lipgloss.Top, requestPanel, responsePanel)
 
-	collectionsPanel := s.renderPanel(PanelCollections, leftWidth, bottomHeight, s.viewCollectionsAccordion())
-	historyPanel := s.renderPanel(PanelHistory, rightWidth, bottomHeight, s.viewHistoryAccordion())
+	collectionsPanel := s.renderPanel(PanelCollections, leftWidth, bottomHeight, s.viewCollectionsAccordion(), dimmed)
+	historyPanel := s.renderPanel(PanelHistory, rightWidth, bottomHeight, s.viewHistoryAccordion(), dimmed)
 	bottom := lipgloss.JoinHorizontal(lipgloss.Top, collectionsPanel, historyPanel)
 
 	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
@@ -100,13 +154,17 @@ func (s *Shell) currentPreviewRequestName() string {
 	return ""
 }
 
-func (s *Shell) renderPanel(p Panel, w, h int, content string) string {
+func (s *Shell) renderPanel(p Panel, w, h int, content string, dimmed bool) string {
 	style := panelBorderUnfocused
-	if s.focus == p {
+	title := panelTitle
+	switch {
+	case dimmed:
+		style = panelBorderDimmed
+		title = panelTitleDimmed
+	case s.focus == p:
 		style = panelBorderFocused
 	}
-	title := panelTitle.Render(panelLabels[p])
-	body := title + "\n" + content
+	body := title.Render(panelLabels[p]) + "\n" + content
 	return style.Width(w - 2).Height(h - 2).Render(body)
 }
 

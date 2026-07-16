@@ -4,9 +4,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/asunaro276/lazycurl/internal/collection"
 	"github.com/asunaro276/lazycurl/internal/curlexec"
@@ -693,5 +695,92 @@ func TestShellHistoryPreviewExpandsWithoutAffectingResponseUntilEnter(t *testing
 	s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if s.viewingIdx != 0 {
 		t.Fatalf("expected enter to confirm viewingIdx to the previewed entry, got %d", s.viewingIdx)
+	}
+}
+
+// TestShellViewOverlayCompositesOverBackgroundPanels asserts that showing an
+// overlay no longer discards the 4-panel grid: on a terminal large enough
+// that a small overlay (confirm-delete) doesn't fully cover any panel's
+// title row, both the background panel titles (dimmed) and the overlay's own
+// content must appear in the rendered output. (A large overlay, like help,
+// can legitimately cover whatever panel titles sit directly underneath it --
+// that's not a regression, just geometry -- so this test picks a small
+// overlay to isolate the "background survives" behavior specifically.)
+func TestShellViewOverlayCompositesOverBackgroundPanels(t *testing.T) {
+	s := newTestShell(t)
+	s.SetSize(200, 60)
+
+	s.setFocus(PanelCollections)
+	s.collectionsCursorDown() // header (-1) -> first request (0)
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if s.overlay != overlayConfirmDelete {
+		t.Fatalf("expected overlayConfirmDelete, got %v", s.overlay)
+	}
+
+	view := s.View()
+	for _, label := range []string{"Request", "Response", "Collections", "History"} {
+		if !strings.Contains(view, label) {
+			t.Fatalf("expected background panel label %q to still be present behind the overlay, view=%q", label, view)
+		}
+	}
+	if !strings.Contains(view, "削除しますか") {
+		t.Fatalf("expected confirm-delete overlay content in view, got %q", view)
+	}
+}
+
+// TestShellViewOverlayFallsBackToFullscreenWhenTerminalTooSmall asserts that
+// an overlay whose rendered size doesn't fit the terminal falls back to the
+// pre-compositing fullscreen behavior (background panels absent), rather
+// than rendering a corrupted or clipped composite.
+func TestShellViewOverlayFallsBackToFullscreenWhenTerminalTooSmall(t *testing.T) {
+	s := newTestShell(t)
+	s.SetSize(10, 5) // too small for the help overlay's content
+
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	if s.overlay != overlayHelp {
+		t.Fatalf("expected overlayHelp, got %v", s.overlay)
+	}
+
+	view := s.View()
+	if strings.Contains(view, "Collections") || strings.Contains(view, "History") {
+		t.Fatalf("expected fullscreen fallback (no background panel labels) on a too-small terminal, view=%q", view)
+	}
+	if !strings.Contains(view, "キーバインド") {
+		t.Fatalf("expected help overlay content in the fallback view, got %q", view)
+	}
+}
+
+// TestCompositeOverlayHandlesFullWidthContent exercises compositeOverlay
+// directly with Japanese (full-width) text in both the background and the
+// overlay, since ansi.Cut must split on display-cell boundaries rather than
+// byte or rune counts to avoid corrupting wide characters at the splice
+// point.
+func TestCompositeOverlayHandlesFullWidthContent(t *testing.T) {
+	bgLine := strings.Repeat("背景パネルの内容です", 3)
+	background := strings.Join([]string{bgLine, bgLine, bgLine}, "\n")
+	overlay := "選択してください\nはい/いいえ"
+
+	got := compositeOverlay(background, overlay, ansi.StringWidth(bgLine), 3)
+
+	if !strings.Contains(got, "選択してください") || !strings.Contains(got, "はい/いいえ") {
+		t.Fatalf("expected overlay content to be present, got %q", got)
+	}
+	if !strings.Contains(got, "背景パネルの内容です") {
+		t.Fatalf("expected background content to survive splicing, got %q", got)
+	}
+}
+
+// TestCompositeOverlayFallsBackWhenOverlayDoesNotFit asserts the fallback
+// path: when the overlay's rendered width/height exceeds the given terminal
+// bounds, compositeOverlay returns the overlay content unmodified instead of
+// attempting (and corrupting) a splice.
+func TestCompositeOverlayFallsBackWhenOverlayDoesNotFit(t *testing.T) {
+	background := strings.Join([]string{"aaaaaaaaaa", "bbbbbbbbbb"}, "\n")
+	overlay := "this overlay line is much too wide to fit"
+
+	got := compositeOverlay(background, overlay, 10, 2)
+
+	if got != overlay {
+		t.Fatalf("expected fallback to return overlay content verbatim, got %q", got)
 	}
 }

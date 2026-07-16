@@ -55,6 +55,12 @@ func (g *KVGrid) Blur() {
 
 func (g KVGrid) Focused() bool { return g.focused }
 
+// Editing reports whether a cell is currently mid-edit (as opposed to mere
+// row/column navigation). Used by Editor to decide whether an esc should be
+// forwarded to the grid (cancel the cell edit) or should instead pop the
+// grid itself out of focus.
+func (g KVGrid) Editing() bool { return g.editing }
+
 func (g *KVGrid) cancelEdit() {
 	g.editing = false
 	g.advanceToValue = false

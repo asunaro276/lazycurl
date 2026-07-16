@@ -59,24 +59,55 @@ func newTestShell(t *testing.T) *Shell {
 	return s
 }
 
-func TestShellLoadsCollectionsAndRequests(t *testing.T) {
+// newEmptyTestShell returns a Shell with no collections at all, to exercise
+// the scratch (collection-less) request's "no collection required"
+// guarantees.
+func newEmptyTestShell(t *testing.T) *Shell {
+	t.Helper()
+	dir := t.TempDir()
+	colStore := collection.NewStore(filepath.Join(dir, "collections"))
+	envStore := environment.NewStore(filepath.Join(dir, "env"), filepath.Join(dir, "state.json"))
+	executor := curlexec.NewExecutorWithRunner(&stubRunner{statusCode: 200, body: "ok"})
+
+	s, err := New(colStore, envStore, executor)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s.SetSize(120, 40)
+	return s
+}
+
+func TestShellLoadsCollectionsAndPreview(t *testing.T) {
 	s := newTestShell(t)
 	if len(s.collections) != 1 || s.collections[0].Name != "api" {
 		t.Fatalf("unexpected collections: %+v", s.collections)
 	}
-	if len(s.requests) != 2 {
-		t.Fatalf("unexpected requests: %+v", s.requests)
+	if len(s.previewRequests) != 2 {
+		t.Fatalf("unexpected preview requests: %+v", s.previewRequests)
 	}
 }
 
-func TestShellSendRequestWithoutVariables(t *testing.T) {
+func TestShellDefaultsToRequestPanelWithScratchRequest(t *testing.T) {
 	s := newTestShell(t)
-	s.focus = PanelRequests
-	s.requestIdx = 0 // "Get health" has no {{vars}}
+	if s.focus != PanelRequest {
+		t.Fatalf("expected default focus PanelRequest, got %v", s.focus)
+	}
+	if !s.usingScratch {
+		t.Fatal("expected a fresh Shell to start on the scratch request")
+	}
+}
 
-	cmd := s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+func TestShellSendLoadedRequestWithoutVariables(t *testing.T) {
+	s := newTestShell(t)
+	reqs, err := s.colStore.LoadRequests("api")
+	if err != nil {
+		t.Fatalf("LoadRequests: %v", err)
+	}
+	s.loadRequestIntoEditor("api", reqs, 0) // "Get health" has no {{vars}}
+
+	cmd := s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
 	if cmd == nil {
-		t.Fatal("expected a command from sendCurrent")
+		t.Fatal("expected a command from sendLoadedCurrent")
 	}
 	if !s.sending {
 		t.Fatal("expected sending=true")
@@ -103,14 +134,17 @@ func TestShellSendRequestWithoutVariables(t *testing.T) {
 	}
 }
 
-func TestShellSendRequestWithUndefinedVariableBlocksSend(t *testing.T) {
+func TestShellSendLoadedRequestWithUndefinedVariableBlocksSend(t *testing.T) {
 	s := newTestShell(t)
-	s.focus = PanelRequests
-	s.requestIdx = 1 // "Get user" references {{host}}/{{id}}, no env active
+	reqs, err := s.colStore.LoadRequests("api")
+	if err != nil {
+		t.Fatalf("LoadRequests: %v", err)
+	}
+	s.loadRequestIntoEditor("api", reqs, 1) // "Get user" references {{host}}/{{id}}, no env active
 
 	// A command is still returned (the status-bar auto-clear timer), but no
 	// send/execution takes place.
-	s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
 	if s.sending {
 		t.Error("should not be sending")
 	}
@@ -122,24 +156,24 @@ func TestShellSendRequestWithUndefinedVariableBlocksSend(t *testing.T) {
 	}
 }
 
-func TestShellDuplicateAndDeleteRequest(t *testing.T) {
+func TestShellCollectionsDuplicateAndDeleteRequest(t *testing.T) {
 	s := newTestShell(t)
-	s.focus = PanelRequests
-	s.requestIdx = 0
+	s.setFocus(PanelCollections)
+	s.collectionReqIdx = 0
 
 	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
-	if len(s.requests) != 3 {
-		t.Fatalf("expected 3 requests after duplicate, got %d", len(s.requests))
+	if len(s.previewRequests) != 3 {
+		t.Fatalf("expected 3 requests after duplicate, got %d", len(s.previewRequests))
 	}
 
-	s.requestIdx = 2
+	s.collectionReqIdx = 2
 	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
 	if s.overlay != overlayConfirmDelete {
 		t.Fatalf("expected confirm-delete overlay")
 	}
 	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
-	if len(s.requests) != 2 {
-		t.Fatalf("expected 2 requests after delete, got %d", len(s.requests))
+	if len(s.previewRequests) != 2 {
+		t.Fatalf("expected 2 requests after delete, got %d", len(s.previewRequests))
 	}
 	if s.overlay != overlayNone {
 		t.Fatalf("expected overlay closed after delete")
@@ -148,9 +182,9 @@ func TestShellDuplicateAndDeleteRequest(t *testing.T) {
 
 func TestShellCreateNewCollection(t *testing.T) {
 	s := newTestShell(t)
-	s.focus = PanelCollections
+	s.setFocus(PanelCollections)
 
-	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("N")})
 	if s.overlay != overlayNewCollection {
 		t.Fatalf("expected new-collection overlay")
 	}
@@ -172,11 +206,11 @@ func TestShellEnvSwitching(t *testing.T) {
 	if err := s.envStore.Save("api", "dev", map[string]string{"host": "https://dev.example.com", "id": "1"}); err != nil {
 		t.Fatalf("Save env: %v", err)
 	}
-	if err := s.reloadEnvironments(); err != nil {
-		t.Fatalf("reloadEnvironments: %v", err)
+	if err := s.reloadCollectionPreview(); err != nil {
+		t.Fatalf("reloadCollectionPreview: %v", err)
 	}
 
-	s.focus = PanelRequests
+	s.setFocus(PanelCollections)
 	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("E")})
 	if s.overlay != overlayEnvSelect {
 		t.Fatalf("expected env-select overlay")
@@ -195,8 +229,13 @@ func TestShellEnvSwitching(t *testing.T) {
 	}
 
 	// Now sending the {{host}}/{{id}} request should succeed.
-	s.requestIdx = 1
-	cmd := s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	reqs, err := s.colStore.LoadRequests("api")
+	if err != nil {
+		t.Fatalf("LoadRequests: %v", err)
+	}
+	s.loadRequestIntoEditor("api", reqs, 1)
+	s.setFocus(PanelRequest)
+	cmd := s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
 	if cmd == nil {
 		t.Fatal("expected send command once variables are defined")
 	}
@@ -207,108 +246,26 @@ func TestShellEnvSwitching(t *testing.T) {
 	}
 }
 
-// newEmptyTestShell returns a Shell with no collections at all, to exercise
-// Adhoc mode's "no collection required" guarantees.
-func newEmptyTestShell(t *testing.T) *Shell {
-	t.Helper()
-	dir := t.TempDir()
-	colStore := collection.NewStore(filepath.Join(dir, "collections"))
-	envStore := environment.NewStore(filepath.Join(dir, "env"), filepath.Join(dir, "state.json"))
-	executor := curlexec.NewExecutorWithRunner(&stubRunner{statusCode: 200, body: "ok"})
-
-	s, err := New(colStore, envStore, executor)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	s.SetSize(120, 40)
-	return s
-}
-
-func TestShellDefaultsToAdhocMode(t *testing.T) {
-	s := newTestShell(t)
-	if s.Mode() != ModeAdhoc {
-		t.Fatalf("expected default mode Adhoc, got %v", s.Mode())
-	}
-	if s.focus != PanelEditor {
-		t.Fatalf("expected default focus PanelEditor, got %v", s.focus)
-	}
-}
-
-func TestShellModeSwitchAndPanelCycling(t *testing.T) {
-	s := newTestShell(t)
-	if s.focus != PanelEditor || !s.inFormZone() {
-		t.Fatalf("expected default focus PanelEditor (form zone), got focus=%v inFormZone=%v", s.focus, s.inFormZone())
-	}
-	if !s.editor.AtFirstFocus() {
-		t.Fatal("expected the embedded form to start at its first field (Method)")
-	}
-
-	// Tabbing through the whole form (Method -> URL -> content) exits
-	// forward to the next Shell panel once the form reaches its last
-	// zone; a bare tab before that just moves within the form.
-	s.handleKey(tea.KeyMsg{Type: tea.KeyTab}) // Method -> URL
-	s.handleKey(tea.KeyMsg{Type: tea.KeyTab}) // URL -> content
-	if s.focus != PanelEditor || !s.editor.AtLastFocus() {
-		t.Fatalf("expected to still be on PanelEditor at its last zone, got focus=%v", s.focus)
-	}
-	s.handleKey(tea.KeyMsg{Type: tea.KeyTab}) // content -> exits the form
-	if s.focus != PanelResponse {
-		t.Fatalf("expected tab from the form's last zone to exit to PanelResponse, got %v", s.focus)
-	}
-
-	// Mode toggling via '['/']' only works outside the form zone. Response
-	// is shared between both modes' panel sets, so focus doesn't move.
-	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
-	if s.Mode() != ModeCollections {
-		t.Fatalf("expected Collections mode after ']', got %v", s.Mode())
-	}
-	if s.focus != PanelResponse {
-		t.Fatalf("expected focus to remain on PanelResponse, got %v", s.focus)
-	}
-
-	// Jump to PanelCollections (not valid in Adhoc's panel set), then
-	// toggle back: this should reset focus to PanelEditor and reload the
-	// embedded form from the (unchanged) scratch request.
-	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
-	if s.focus != PanelCollections {
-		t.Fatalf("expected PanelCollections after '1', got %v", s.focus)
-	}
-	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("[")})
-	if s.Mode() != ModeAdhoc {
-		t.Fatalf("expected Adhoc mode after '[', got %v", s.Mode())
-	}
-	if s.focus != PanelEditor {
-		t.Fatalf("expected focus reset to PanelEditor, got %v", s.focus)
-	}
-	if !s.editor.AtFirstFocus() {
-		t.Fatal("expected the embedded form to reset to Method on re-entering PanelEditor")
-	}
-}
-
-func TestShellAdhocEditAndSendWithoutCollection(t *testing.T) {
+func TestShellScratchInlineEditUpdatesScratchRequest(t *testing.T) {
 	s := newEmptyTestShell(t)
 	if len(s.collections) != 0 {
 		t.Fatalf("expected no collections, got %+v", s.collections)
 	}
-	if s.Mode() != ModeAdhoc {
-		t.Fatalf("expected Adhoc mode, got %v", s.Mode())
+	if !s.usingScratch {
+		t.Fatal("expected the Request panel to start on the scratch request")
 	}
 
-	// The Editor panel is always in its form zone -- there is no separate
-	// key to "enter" editing; typing directly edits the scratch request.
-	if !s.inFormZone() {
-		t.Fatal("expected Adhoc's Editor panel to always be in the form zone")
-	}
-	s.handleKey(tea.KeyMsg{Type: tea.KeyTab}) // Method -> URL
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}) // Method -> URL (normal state)
+	s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})                     // start insert on URL
 	for _, r := range "https://example.com/scratch" {
 		s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	if s.AdhocRequest().URL != "https://example.com/scratch" {
-		t.Fatalf("expected scratch request to be updated, got %+v", s.AdhocRequest())
+	if s.ScratchRequest().URL != "https://example.com/scratch" {
+		t.Fatalf("expected scratch request to be updated, got %+v", s.ScratchRequest())
 	}
 
-	// ctrl+r sends the scratch request without any variable expansion
-	// ('enter' is reserved for in-field editing while the form has focus).
+	// ctrl+r sends the scratch request without any variable expansion,
+	// even while the URL field is still in insert state.
 	sendCmd := s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
 	if sendCmd == nil {
 		t.Fatal("expected a send command")
@@ -330,13 +287,13 @@ func TestShellAdhocEditAndSendWithoutCollection(t *testing.T) {
 	}
 }
 
-func TestShellAdhocSaveToExistingCollection(t *testing.T) {
+func TestShellScratchSaveToExistingCollection(t *testing.T) {
 	s := newTestShell(t) // has collection "api" with 2 requests
-	s.SetAdhocRequest(httpfile.Request{Name: "Scratch", Method: "GET", URL: "https://example.com/scratch"})
+	s.SetScratchRequest(httpfile.Request{Name: "Scratch", Method: "GET", URL: "https://example.com/scratch"})
 
 	s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlS})
-	if s.overlay != overlaySaveAdhoc {
-		t.Fatalf("expected overlaySaveAdhoc, got %v", s.overlay)
+	if s.overlay != overlaySaveTo {
+		t.Fatalf("expected overlaySaveTo, got %v", s.overlay)
 	}
 	s.saveIdx = 0 // "api" is the only collection
 
@@ -349,14 +306,14 @@ func TestShellAdhocSaveToExistingCollection(t *testing.T) {
 	if len(requests) != 3 || requests[2].URL != "https://example.com/scratch" {
 		t.Fatalf("expected scratch request appended to 'api', got %+v", requests)
 	}
-	if s.AdhocRequest().URL != "" {
-		t.Fatalf("expected scratch request reset after save, got %+v", s.AdhocRequest())
+	if s.ScratchRequest().URL != "" {
+		t.Fatalf("expected scratch request reset after save, got %+v", s.ScratchRequest())
 	}
 }
 
-func TestShellAdhocSaveToNewCollection(t *testing.T) {
+func TestShellScratchSaveToNewCollection(t *testing.T) {
 	s := newTestShell(t)
-	s.SetAdhocRequest(httpfile.Request{Name: "Scratch", Method: "GET", URL: "https://example.com/scratch"})
+	s.SetScratchRequest(httpfile.Request{Name: "Scratch", Method: "GET", URL: "https://example.com/scratch"})
 
 	s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlS})
 	s.saveIdx = len(s.collections) // the "+ new collection" entry
@@ -376,46 +333,6 @@ func TestShellAdhocSaveToNewCollection(t *testing.T) {
 	}
 	if len(requests) != 1 || requests[0].URL != "https://example.com/scratch" {
 		t.Fatalf("expected scratch request saved as first request of new collection, got %+v", requests)
-	}
-}
-
-// TestShellFormZoneProtectsTextInputFromGlobalShortcuts guards against a
-// regression where global shortcuts (q/s/[/]/digits/enter) would swallow
-// characters meant for the URL field instead of being typed literally, once
-// the Requests/Editor panel's form zone has focus.
-func TestShellFormZoneProtectsTextInputFromGlobalShortcuts(t *testing.T) {
-	s := newTestShell(t)
-	if !s.inFormZone() {
-		t.Fatal("expected Adhoc's Editor panel to start in the form zone")
-	}
-	s.handleKey(tea.KeyMsg{Type: tea.KeyTab}) // Method -> URL
-
-	for _, r := range "https://x.test/a[1]?q=1" {
-		s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-	}
-	want := "https://x.test/a[1]?q=1"
-	if got := s.AdhocRequest().URL; got != want {
-		t.Fatalf("expected literal text typed into URL, got %q want %q", got, want)
-	}
-	if s.sending {
-		t.Fatal("'q'/'s' typed as text must not trigger quit/save side effects")
-	}
-	if s.overlay != overlayNone {
-		t.Fatalf("expected no overlay opened by typed text, got %v", s.overlay)
-	}
-}
-
-func TestShellFormZoneCtrlCStillCancelsQuit(t *testing.T) {
-	s := newTestShell(t)
-	if !s.inFormZone() {
-		t.Fatal("expected Adhoc's Editor panel to start in the form zone")
-	}
-	cmd := s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlC})
-	if cmd == nil {
-		t.Fatal("expected ctrl+c to still produce a quit command from within the form zone")
-	}
-	if _, ok := cmd().(QuitMsg); !ok {
-		t.Fatal("expected ctrl+c to emit QuitMsg from within the form zone")
 	}
 }
 
@@ -454,47 +371,52 @@ func TestShellStatusMessageAutoClearByGeneration(t *testing.T) {
 	}
 }
 
-func TestShellAdhocSaveSwitchesToCollectionsMode(t *testing.T) {
+func TestShellScratchSaveFocusesCollectionsOnSavedRequest(t *testing.T) {
 	s := newTestShell(t)
-	s.SetAdhocRequest(httpfile.Request{Name: "Scratch", Method: "GET", URL: "https://example.com/scratch"})
+	s.SetScratchRequest(httpfile.Request{Name: "Scratch", Method: "GET", URL: "https://example.com/scratch"})
 
 	s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlS})
 	s.saveIdx = 0 // "api"
 	s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 
-	if s.Mode() != ModeCollections {
-		t.Fatalf("expected Collections mode after save, got %v", s.Mode())
-	}
-	if s.focus != PanelRequests {
-		t.Fatalf("expected focus on PanelRequests after save, got %v", s.focus)
+	if s.focus != PanelCollections {
+		t.Fatalf("expected focus on PanelCollections after save, got %v", s.focus)
 	}
 	if s.currentCollectionName() != "api" {
 		t.Fatalf("expected selected collection 'api', got %q", s.currentCollectionName())
 	}
-	if s.requestIdx != len(s.requests)-1 || s.requests[s.requestIdx].URL != "https://example.com/scratch" {
-		t.Fatalf("expected selected request to be the saved one, got idx=%d requests=%+v", s.requestIdx, s.requests)
+	if s.collectionReqIdx != len(s.previewRequests)-1 || s.previewRequests[s.collectionReqIdx].URL != "https://example.com/scratch" {
+		t.Fatalf("expected selected request to be the saved one, got idx=%d requests=%+v", s.collectionReqIdx, s.previewRequests)
 	}
 	if s.overlay != overlayNone {
 		t.Fatalf("expected overlay closed after save, got %v", s.overlay)
 	}
+	if !s.usingScratch || s.ScratchRequest().URL != "" {
+		t.Fatalf("expected scratch request reset to empty after save, got %+v usingScratch=%v", s.ScratchRequest(), s.usingScratch)
+	}
 }
 
-// TestShellSaveUnnamedRequestPromptsForName covers the Collections save
-// path: a freshly created request has no name, so ctrl+s must open
-// overlayRequestName instead of writing to disk immediately; entering a
-// name and confirming completes the save with that name.
-func TestShellSaveUnnamedRequestPromptsForName(t *testing.T) {
+// TestShellSaveUnnamedLoadedRequestPromptsForName covers the loaded (already
+// collection-bound) request save path: a freshly created request has no
+// name, so ctrl+s must open overlayRequestName instead of writing to disk
+// immediately; entering a name and confirming completes the save with that
+// name.
+func TestShellSaveUnnamedLoadedRequestPromptsForName(t *testing.T) {
 	s := newTestShell(t)
-	s.mode = ModeCollections
-	s.focus = PanelRequests
+	s.setFocus(PanelCollections)
 
-	// 'n' appends a nameless request and enters the form zone directly.
+	// 'n' appends a nameless request to the current collection and loads
+	// it directly into [0] Request, moving focus there.
 	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if s.focus != PanelRequest {
+		t.Fatalf("expected 'n' to move focus to PanelRequest, got %v", s.focus)
+	}
 	if s.requests[s.requestIdx].Name != "" {
 		t.Fatalf("expected the newly created request to start unnamed, got %+v", s.requests[s.requestIdx])
 	}
 
-	s.handleKey(tea.KeyMsg{Type: tea.KeyTab}) // Method -> URL
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}) // Method -> URL
+	s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})                     // start insert
 	for _, r := range "https://example.com/new" {
 		s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
@@ -526,8 +448,7 @@ func TestShellSaveUnnamedRequestPromptsForName(t *testing.T) {
 // prompt without writing anything to disk.
 func TestShellSaveUnnamedRequestPromptCancel(t *testing.T) {
 	s := newTestShell(t)
-	s.mode = ModeCollections
-	s.focus = PanelRequests
+	s.setFocus(PanelCollections)
 
 	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlS})
@@ -554,11 +475,12 @@ func TestShellSaveUnnamedRequestPromptCancel(t *testing.T) {
 // ctrl+s, with no name prompt interrupting the flow.
 func TestShellSaveNamedRequestSkipsPrompt(t *testing.T) {
 	s := newTestShell(t)
-	s.mode = ModeCollections
-	s.focus = PanelRequests
-	s.requestIdx = 0 // "Get health" already has a name
+	reqs, err := s.colStore.LoadRequests("api")
+	if err != nil {
+		t.Fatalf("LoadRequests: %v", err)
+	}
+	s.loadRequestIntoEditor("api", reqs, 0) // "Get health" already has a name
 
-	s.handleKey(tea.KeyMsg{Type: tea.KeyTab}) // enter the form zone
 	s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlS})
 
 	if s.overlay != overlayNone {
@@ -566,12 +488,13 @@ func TestShellSaveNamedRequestSkipsPrompt(t *testing.T) {
 	}
 }
 
-// TestShellAdhocSaveUnnamedRequestPromptsForNameFirst covers the Adhoc save
-// path: an unnamed scratch request must be named via overlayRequestName
-// before the save-to-collection picker (overlaySaveAdhoc) appears.
-func TestShellAdhocSaveUnnamedRequestPromptsForNameFirst(t *testing.T) {
+// TestShellScratchSaveUnnamedRequestPromptsForNameFirst covers the scratch
+// save path: an unnamed scratch request must be named via
+// overlayRequestName before the save-to-collection picker (overlaySaveTo)
+// appears.
+func TestShellScratchSaveUnnamedRequestPromptsForNameFirst(t *testing.T) {
 	s := newTestShell(t) // has collection "api" with 2 requests
-	s.SetAdhocRequest(httpfile.Request{Method: "GET", URL: "https://example.com/scratch"})
+	s.SetScratchRequest(httpfile.Request{Method: "GET", URL: "https://example.com/scratch"})
 
 	s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlS})
 	if s.overlay != overlayRequestName {
@@ -583,11 +506,11 @@ func TestShellAdhocSaveUnnamedRequestPromptsForNameFirst(t *testing.T) {
 	}
 	s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 
-	if s.overlay != overlaySaveAdhoc {
-		t.Fatalf("expected overlaySaveAdhoc once the name is confirmed, got %v", s.overlay)
+	if s.overlay != overlaySaveTo {
+		t.Fatalf("expected overlaySaveTo once the name is confirmed, got %v", s.overlay)
 	}
-	if s.AdhocRequest().Name != "Scratch" {
-		t.Fatalf("expected the scratch request to carry the prompted name, got %+v", s.AdhocRequest())
+	if s.ScratchRequest().Name != "Scratch" {
+		t.Fatalf("expected the scratch request to carry the prompted name, got %+v", s.ScratchRequest())
 	}
 
 	s.saveIdx = 0 // "api"
@@ -599,5 +522,176 @@ func TestShellAdhocSaveUnnamedRequestPromptsForNameFirst(t *testing.T) {
 	}
 	if len(requests) != 3 || requests[2].Name != "Scratch" {
 		t.Fatalf("expected the scratch request saved with the prompted name, got %+v", requests)
+	}
+}
+
+// --- Panel-switching / insert-state gating (0-3, tab) ---
+
+// TestShellDigitKeysSwitchPanelsInNormalState confirms 0-3 always jump
+// panels while the Request panel is in its normal (non-insert) state.
+func TestShellDigitKeysSwitchPanelsInNormalState(t *testing.T) {
+	s := newTestShell(t)
+	if s.focus != PanelRequest || s.editor.Editing() {
+		t.Fatalf("expected default focus PanelRequest in normal state, got focus=%v editing=%v", s.focus, s.editor.Editing())
+	}
+
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+	if s.focus != PanelCollections {
+		t.Fatalf("expected '2' to jump to PanelCollections, got %v", s.focus)
+	}
+
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
+	if s.focus != PanelHistory {
+		t.Fatalf("expected '3' to jump to PanelHistory, got %v", s.focus)
+	}
+
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("0")})
+	if s.focus != PanelRequest {
+		t.Fatalf("expected '0' to jump back to PanelRequest, got %v", s.focus)
+	}
+}
+
+// TestShellDigitKeysAreLiteralTextWhileInsert guards against a regression
+// where global shortcuts (digits included) would swallow characters meant
+// for a text field once the Request panel's editor has entered insert.
+func TestShellDigitKeysAreLiteralTextWhileInsert(t *testing.T) {
+	s := newTestShell(t)
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}) // Method -> URL
+	s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})                     // start insert
+	if !s.editor.Editing() {
+		t.Fatal("expected the editor to be in insert state")
+	}
+
+	for _, r := range "https://x.test/a123" {
+		s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	want := "https://x.test/a123"
+	if got := s.ScratchRequest().URL; got != want {
+		t.Fatalf("expected literal digits typed into URL, got %q want %q", got, want)
+	}
+	if s.focus != PanelRequest {
+		t.Fatalf("expected focus to stay on PanelRequest while typing digits, got %v", s.focus)
+	}
+}
+
+func TestShellFormZoneCtrlCStillCancelsQuit(t *testing.T) {
+	s := newTestShell(t)
+	cmd := s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("expected ctrl+c to still produce a quit command from the Request panel")
+	}
+	if _, ok := cmd().(QuitMsg); !ok {
+		t.Fatal("expected ctrl+c to emit QuitMsg from the Request panel")
+	}
+}
+
+// --- Collections drilldown ---
+
+// TestShellCollectionsDrilldownLoadsRequestIntoRequestPanel exercises the
+// two-level accordion: cursor movement expands/collapses which collection
+// is shown, and enter on a request row loads it into [0] Request with focus
+// moving there.
+func TestShellCollectionsDrilldownLoadsRequestIntoRequestPanel(t *testing.T) {
+	s := newTestShell(t)
+	s.setFocus(PanelCollections)
+	if s.collectionReqIdx != -1 {
+		t.Fatalf("expected the Collections cursor to start on the collection header, got %d", s.collectionReqIdx)
+	}
+
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}) // header -> first request row
+	if s.collectionReqIdx != 0 {
+		t.Fatalf("expected cursor movement to descend into the first request row, got %d", s.collectionReqIdx)
+	}
+
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}) // -> second request row
+	if s.collectionReqIdx != 1 {
+		t.Fatalf("expected cursor movement to the second request row, got %d", s.collectionReqIdx)
+	}
+
+	s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if s.focus != PanelRequest {
+		t.Fatalf("expected enter on a request row to move focus to PanelRequest, got %v", s.focus)
+	}
+	if s.usingScratch {
+		t.Fatal("expected the loaded request to no longer be the scratch request")
+	}
+	if s.requests[s.requestIdx].Name != "Get user" {
+		t.Fatalf("expected 'Get user' to be loaded, got %+v", s.requests[s.requestIdx])
+	}
+}
+
+// TestShellCollectionsCursorMovesBetweenCollections confirms moving the
+// cursor past the last request row (or up past the header) crosses into
+// the neighboring collection, collapsing the previous one.
+func TestShellCollectionsCursorMovesBetweenCollections(t *testing.T) {
+	s := newTestShell(t)
+	if err := s.colStore.CreateCollection("web"); err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	if err := s.reloadCollections(); err != nil {
+		t.Fatalf("reloadCollections: %v", err)
+	}
+	s.setFocus(PanelCollections)
+
+	// Descend through "api"'s 2 requests, then one more down should cross
+	// into "web"'s header.
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}) // row 0
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}) // row 1
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}) // -> next collection header
+	if s.collectionIdx != 1 || s.collectionReqIdx != -1 {
+		t.Fatalf("expected cursor to land on the next collection's header, got collectionIdx=%d collectionReqIdx=%d", s.collectionIdx, s.collectionReqIdx)
+	}
+	if s.currentCollectionName() != "web" {
+		t.Fatalf("expected 'web' to be current, got %q", s.currentCollectionName())
+	}
+
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")}) // back up into "api"'s last row
+	if s.collectionIdx != 0 {
+		t.Fatalf("expected cursor to move back to 'api', got collectionIdx=%d", s.collectionIdx)
+	}
+	if s.collectionReqIdx != len(s.previewRequests)-1 {
+		t.Fatalf("expected cursor to land on api's last request row, got %d (previewRequests=%+v)", s.collectionReqIdx, s.previewRequests)
+	}
+}
+
+// --- History preview / confirm ---
+
+// TestShellHistoryPreviewExpandsWithoutAffectingResponseUntilEnter confirms
+// j/k moves the History panel's preview cursor (viewingIdx unaffected)
+// while enter confirms it into [1] Response.
+func TestShellHistoryPreviewExpandsWithoutAffectingResponseUntilEnter(t *testing.T) {
+	s := newTestShell(t)
+	reqs, err := s.colStore.LoadRequests("api")
+	if err != nil {
+		t.Fatalf("LoadRequests: %v", err)
+	}
+	s.loadRequestIntoEditor("api", reqs, 0)
+	for range 2 {
+		cmd := s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
+		if cmd == nil {
+			t.Fatal("expected a send command")
+		}
+		s.Update(cmd())
+	}
+	if len(s.history) != 2 {
+		t.Fatalf("expected 2 history entries, got %d", len(s.history))
+	}
+	// A fresh send leaves viewingIdx at -1 (live/latest).
+	if s.viewingIdx != -1 {
+		t.Fatalf("expected viewingIdx to reset to -1 (live) after a send, got %d", s.viewingIdx)
+	}
+
+	s.setFocus(PanelHistory)
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")}) // preview the older entry
+	if s.historyIdx != 0 {
+		t.Fatalf("expected historyIdx to move to 0, got %d", s.historyIdx)
+	}
+	if s.viewingIdx != -1 {
+		t.Fatal("expected viewingIdx to stay untouched by cursor movement alone")
+	}
+
+	s.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if s.viewingIdx != 0 {
+		t.Fatalf("expected enter to confirm viewingIdx to the previewed entry, got %d", s.viewingIdx)
 	}
 }

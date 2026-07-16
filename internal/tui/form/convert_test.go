@@ -74,22 +74,22 @@ func TestEditorFromRequestToRequestRoundTrip(t *testing.T) {
 // wrapping back to Method.
 func TestEditorFocusCycleExcludesName(t *testing.T) {
 	e := New()
-	if !e.AtFirstFocus() {
+	if e.focus != focusMethod {
 		t.Fatal("expected a fresh Editor to start at its first focus zone (Method)")
 	}
 
 	e.FocusNext() // Method -> URL
-	if e.AtFirstFocus() || e.AtLastFocus() {
-		t.Fatal("expected URL to be neither the first nor the last focus zone")
+	if e.focus != focusURL {
+		t.Fatal("expected URL to follow Method")
 	}
 
 	e.FocusNext() // URL -> content
-	if !e.AtLastFocus() {
-		t.Fatal("expected content to be the last focus zone after two FocusNext calls")
+	if e.focus != focusContent {
+		t.Fatal("expected content to follow URL")
 	}
 
 	e.FocusNext() // content -> Method (wraps directly, no Name zone in between)
-	if !e.AtFirstFocus() {
+	if e.focus != focusMethod {
 		t.Fatal("expected focus to cycle back to Method, skipping any Name zone")
 	}
 }

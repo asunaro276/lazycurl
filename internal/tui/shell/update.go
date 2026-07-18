@@ -8,12 +8,43 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/asunaro276/lazycurl/internal/curlexec"
 	"github.com/asunaro276/lazycurl/internal/environment"
 	"github.com/asunaro276/lazycurl/internal/httpfile"
 )
 
 type sendResultMsg struct {
 	entry HistoryEntry
+}
+
+// streamChunkMsg carries one body chunk from an in-progress `@stream` send.
+// ch is threaded through so the Update handler can re-arm listenStream on
+// the same channel (the classic Bubble Tea subscribe pattern).
+type streamChunkMsg struct {
+	chunk []byte
+	ch    <-chan curlexec.StreamEvent
+}
+
+// streamDoneMsg is the terminal message of a `@stream` send, delivered once
+// the stream ends (naturally or via ctrl-c cancellation).
+type streamDoneMsg struct {
+	done curlexec.StreamDone
+}
+
+// listenStream reads exactly one StreamEvent from ch and returns it as a
+// tea.Msg. The Update handler for streamChunkMsg re-issues this same Cmd so
+// the shell keeps listening until the terminal streamDoneMsg arrives.
+func listenStream(ch <-chan curlexec.StreamEvent) tea.Cmd {
+	return func() tea.Msg {
+		event, ok := <-ch
+		if !ok {
+			return nil
+		}
+		if event.Done != nil {
+			return streamDoneMsg{done: *event.Done}
+		}
+		return streamChunkMsg{chunk: event.Chunk, ch: ch}
+	}
 }
 
 // clearStatusMsg requests clearing the status bar, but only if statusGen
@@ -54,6 +85,29 @@ func (s *Shell) Update(msg tea.Msg) tea.Cmd {
 		s.viewingIdx = -1
 		if msg.entry.Err != nil {
 			return s.setStatus(msg.entry.Err.Error())
+		}
+		return s.setStatus("")
+	case streamChunkMsg:
+		if s.liveResponse != nil {
+			s.liveResponse.Body = append(s.liveResponse.Body, msg.chunk...)
+		}
+		return listenStream(msg.ch)
+	case streamDoneMsg:
+		s.sending = false
+		s.cancelSend = nil
+		s.liveResponse = nil
+		entry := HistoryEntry{
+			CollectionName: s.streamCollectionName,
+			Request:        s.streamRequest,
+			Response:       msg.done.Response,
+			Err:            msg.done.Err,
+			At:             time.Now(),
+		}
+		s.history = append(s.history, entry)
+		s.historyIdx = len(s.history) - 1
+		s.viewingIdx = -1
+		if entry.Err != nil {
+			return s.setStatus(entry.Err.Error())
 		}
 		return s.setStatus("")
 	case clearStatusMsg:
@@ -529,6 +583,10 @@ func (s *Shell) sendLoadedCurrent() tea.Cmd {
 	s.sending = true
 	s.setStatus("")
 
+	if expanded.Pragmas.Stream {
+		return s.beginStreamingSend(ctx, collectionName, expanded)
+	}
+
 	executor := s.executor
 	return func() tea.Msg {
 		resp, err := executor.Execute(ctx, expanded)
@@ -540,6 +598,17 @@ func (s *Shell) sendLoadedCurrent() tea.Cmd {
 			At:             time.Now(),
 		}}
 	}
+}
+
+// beginStreamingSend starts a `@stream` request's streaming execution and
+// returns the Cmd that begins listening for its chunks. Shell-side send
+// bookkeeping (s.sending/s.cancelSend) must already be set by the caller.
+func (s *Shell) beginStreamingSend(ctx context.Context, collectionName string, req httpfile.Request) tea.Cmd {
+	s.liveResponse = &curlexec.Response{}
+	s.streamCollectionName = collectionName
+	s.streamRequest = req
+	ch := s.executor.ExecuteStreaming(ctx, req)
+	return listenStream(ch)
 }
 
 // sendScratchCurrent executes the scratch request as-is, with no
@@ -557,6 +626,10 @@ func (s *Shell) sendScratchCurrent() tea.Cmd {
 	s.cancelSend = cancel
 	s.sending = true
 	s.setStatus("")
+
+	if req.Pragmas.Stream {
+		return s.beginStreamingSend(ctx, "", req)
+	}
 
 	executor := s.executor
 	return func() tea.Msg {

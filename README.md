@@ -95,8 +95,11 @@ Authorization: Bearer {{token}}
 | `# @insecure` | `curl -k`(TLS検証をスキップ) |
 | `# @timeout <duration>` | `curl --max-time <秒数>` |
 | `# @no-redirect` | リダイレクトを追従しない(付与しない場合はデフォルトで `-L` が付く) |
+| `# @stream` | `curl -N`(バッファリング無効化)。bodyを一時ファイル経由ではなく標準出力から逐次読み取り、Responseパネルに到着のたびに追記表示する |
 
 未知のプラグマ行は無視されるため、他ツールで開いても壊れません。
+
+`@stream` はSSE(Server-Sent Events)のような接続維持型のレスポンスを送信中から確認したい場合にオプトインするプラグマです。付与すると、送信完了(またはctrl-cによる中断)を待たずにResponseパネルへbodyが逐次表示されます。応答時間はcurlの`-w`計測ではなくGo側の実測経過時間になります。中断した場合も、それまでに受信したbodyが最終的なレスポンスとして履歴に記録されます。
 
 ## environmentと変数展開
 

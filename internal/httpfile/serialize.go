@@ -34,6 +34,9 @@ func writeRequest(b *strings.Builder, r Request) {
 	if r.Pragmas.NoRedirect {
 		b.WriteString("# @no-redirect\n")
 	}
+	if r.Pragmas.Stream {
+		b.WriteString("# @stream\n")
+	}
 
 	b.WriteString(r.Method)
 	b.WriteString(" ")

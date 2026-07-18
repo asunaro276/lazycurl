@@ -34,12 +34,22 @@ func buildArgs(req httpfile.Request, bodyFile, headerFile, outFile string) []str
 	if !req.Pragmas.NoRedirect {
 		args = append(args, "-L")
 	}
+	if req.Pragmas.Stream {
+		args = append(args, "-N")
+	}
 
 	if bodyFile != "" {
 		args = append(args, "--data-binary", "@"+bodyFile)
 	}
 
-	args = append(args, "-D", headerFile, "-o", outFile, "-w", "%{json}")
+	out := outFile
+	if req.Pragmas.Stream {
+		out = "-"
+	}
+	args = append(args, "-D", headerFile, "-o", out)
+	if !req.Pragmas.Stream {
+		args = append(args, "-w", "%{json}")
+	}
 	return args
 }
 

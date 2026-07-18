@@ -161,6 +161,9 @@ func padMethod(m string) string {
 
 func (s *Shell) viewResponse() string {
 	if s.sending {
+		if s.liveResponse != nil {
+			return renderResponse(s.liveResponse)
+		}
 		return "送信中... (ctrl-c で中断)"
 	}
 

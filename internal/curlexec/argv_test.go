@@ -63,6 +63,26 @@ func TestBuildArgsBodyAndHeaders(t *testing.T) {
 	assertContainsSeq(t, args, []string{"--data-binary", "@/tmp/body-in"})
 }
 
+func TestBuildArgsStreamPragma(t *testing.T) {
+	req := httpfile.Request{
+		Method:  "GET",
+		URL:     "https://example.com/events",
+		Pragmas: httpfile.Pragmas{Stream: true},
+	}
+	args := buildArgs(req, "", "/tmp/h", "/tmp/o")
+
+	if !contains(args, "-N") {
+		t.Errorf("expected -N for @stream, args=%v", args)
+	}
+	assertContainsSeq(t, args, []string{"-o", "-"})
+	if contains(args, "/tmp/o") {
+		t.Errorf("did not expect the outFile path to be used when streaming, args=%v", args)
+	}
+	if contains(args, "-w") {
+		t.Errorf("did not expect -w '%%{json}' when streaming, args=%v", args)
+	}
+}
+
 func TestBuildArgsAuth(t *testing.T) {
 	req := httpfile.Request{
 		Method: "GET",

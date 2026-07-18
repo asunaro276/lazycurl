@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -75,6 +76,162 @@ func newEmptyTestShell(t *testing.T) *Shell {
 	}
 	s.SetSize(120, 40)
 	return s
+}
+
+// fakeStreamRunner delivers a fixed sequence of chunks over a channel,
+// simulating a streaming curl process without spawning one. If cancelable
+// is set, it blocks on ctx.Done() after delivering its chunks instead of
+// returning immediately, so tests can assert that cancellation (not mere
+// exhaustion of chunks) is what ends the stream.
+type fakeStreamRunner struct {
+	statusCode int
+	chunks     [][]byte
+	cancelable bool
+}
+
+func (f *fakeStreamRunner) Run(ctx context.Context, argv []string, chunks chan<- []byte) (int, error) {
+	defer close(chunks)
+	var headerFile string
+	for i, a := range argv {
+		if a == "-D" {
+			headerFile = argv[i+1]
+		}
+	}
+	_ = os.WriteFile(headerFile, []byte("HTTP/1.1 200 OK\r\n\r\n"), 0o600)
+	for _, c := range f.chunks {
+		select {
+		case chunks <- c:
+		case <-ctx.Done():
+			return 0, nil
+		}
+	}
+	if f.cancelable {
+		<-ctx.Done()
+	}
+	return 0, nil
+}
+
+func newStreamingTestShell(t *testing.T, runner *fakeStreamRunner) *Shell {
+	t.Helper()
+	dir := t.TempDir()
+	colStore := collection.NewStore(filepath.Join(dir, "collections"))
+	envStore := environment.NewStore(filepath.Join(dir, "env"), filepath.Join(dir, "state.json"))
+	executor := curlexec.NewExecutorWithRunners(&stubRunner{statusCode: 200, body: "ok"}, runner)
+
+	s, err := New(colStore, envStore, executor)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s.SetSize(120, 40)
+	return s
+}
+
+// TestShellStreamSendRendersChunksIncrementallyThenConfirmsHistory exercises
+// the subscribe pattern end to end: each streamChunkMsg re-arms
+// listenStream, the Response panel shows the accumulated body while sending,
+// and the terminal streamDoneMsg confirms a single History entry.
+func TestShellStreamSendRendersChunksIncrementallyThenConfirmsHistory(t *testing.T) {
+	s := newStreamingTestShell(t, &fakeStreamRunner{statusCode: 200, chunks: [][]byte{[]byte("chunk-a"), []byte("chunk-b")}})
+	s.SetScratchRequest(httpfile.Request{
+		Method:  "GET",
+		URL:     "https://example.com/events",
+		Pragmas: httpfile.Pragmas{Stream: true},
+	})
+
+	cmd := s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
+	if cmd == nil {
+		t.Fatal("expected a send command")
+	}
+	if !s.sending {
+		t.Fatal("expected sending=true")
+	}
+	if s.liveResponse == nil {
+		t.Fatal("expected liveResponse to be initialized for a streaming send")
+	}
+
+	msg := cmd()
+	chunkMsg, ok := msg.(streamChunkMsg)
+	if !ok {
+		t.Fatalf("expected streamChunkMsg, got %T", msg)
+	}
+	cmd = s.Update(chunkMsg)
+	if string(s.liveResponse.Body) != "chunk-a" {
+		t.Fatalf("expected first chunk appended to liveResponse, got %q", s.liveResponse.Body)
+	}
+	if !strings.Contains(s.viewResponse(), "chunk-a") {
+		t.Fatalf("expected viewResponse to show the live chunk, got %q", s.viewResponse())
+	}
+
+	msg = cmd()
+	chunkMsg, ok = msg.(streamChunkMsg)
+	if !ok {
+		t.Fatalf("expected second streamChunkMsg, got %T", msg)
+	}
+	cmd = s.Update(chunkMsg)
+	if string(s.liveResponse.Body) != "chunk-achunk-b" {
+		t.Fatalf("expected second chunk appended, got %q", s.liveResponse.Body)
+	}
+
+	msg = cmd()
+	doneMsg, ok := msg.(streamDoneMsg)
+	if !ok {
+		t.Fatalf("expected streamDoneMsg, got %T", msg)
+	}
+	s.Update(doneMsg)
+
+	if s.sending {
+		t.Error("expected sending=false after streamDoneMsg")
+	}
+	if s.liveResponse != nil {
+		t.Error("expected liveResponse cleared after streamDoneMsg")
+	}
+	if len(s.history) != 1 {
+		t.Fatalf("expected exactly 1 history entry, got %d", len(s.history))
+	}
+	if s.history[0].Err != nil {
+		t.Errorf("unexpected error: %v", s.history[0].Err)
+	}
+	if string(s.history[0].Response.Body) != "chunk-achunk-b" {
+		t.Errorf("expected concatenated body in history, got %q", s.history[0].Response.Body)
+	}
+}
+
+// TestShellStreamCancelConfirmsPartialBodyToHistory exercises ctrl-c
+// cancellation mid-stream: the partial body received so far must still be
+// confirmed into History, and not surfaced as an error.
+func TestShellStreamCancelConfirmsPartialBodyToHistory(t *testing.T) {
+	s := newStreamingTestShell(t, &fakeStreamRunner{statusCode: 200, chunks: [][]byte{[]byte("partial")}, cancelable: true})
+	s.SetScratchRequest(httpfile.Request{
+		Method:  "GET",
+		URL:     "https://example.com/events",
+		Pragmas: httpfile.Pragmas{Stream: true},
+	})
+
+	cmd := s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
+	msg := cmd()
+	chunkMsg := msg.(streamChunkMsg)
+	cmd = s.Update(chunkMsg)
+
+	// ctrl-c cancels the send's context; the fakeStreamRunner then closes
+	// its chunks channel and the final Done event carries the partial body.
+	s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlC})
+
+	msg = cmd()
+	doneMsg, ok := msg.(streamDoneMsg)
+	if !ok {
+		t.Fatalf("expected streamDoneMsg after cancellation, got %T", msg)
+	}
+	s.Update(doneMsg)
+
+	if len(s.history) != 1 {
+		t.Fatalf("expected 1 history entry after cancellation, got %d", len(s.history))
+	}
+	if s.history[0].Err != nil {
+		t.Errorf("expected cancellation to not be surfaced as an error, got %v", s.history[0].Err)
+	}
+	if string(s.history[0].Response.Body) != "partial" {
+		t.Errorf("expected partial body confirmed to history, got %q", s.history[0].Response.Body)
+	}
 }
 
 func TestShellLoadsCollectionsAndPreview(t *testing.T) {

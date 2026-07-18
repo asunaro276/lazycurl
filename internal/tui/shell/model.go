@@ -127,6 +127,19 @@ type Shell struct {
 	sending    bool
 	cancelSend context.CancelFunc
 
+	// liveResponse holds the in-progress response of a `@stream` send: nil
+	// unless sending is true and the current send is streaming. Chunks are
+	// appended to its Body as they arrive; it is discarded once the send is
+	// confirmed into history (see streamDoneMsg handling).
+	liveResponse *curlexec.Response
+
+	// streamCollectionName/streamRequest carry the metadata needed to build
+	// the HistoryEntry once a streaming send's streamDoneMsg arrives, since
+	// (unlike sendResultMsg) it isn't captured in the tea.Cmd closure that
+	// produced it.
+	streamCollectionName string
+	streamRequest        httpfile.Request
+
 	statusMsg string
 	statusGen int // incremented on every setStatus call; guards against stale auto-clear timers
 

@@ -31,6 +31,20 @@ Authorization: Bearer {{token}}
 	}
 }
 
+func TestParseStreamPragma(t *testing.T) {
+	src := `### SSE stream
+# @stream
+GET {{host}}/events
+`
+	reqs := Parse(src)
+	if len(reqs) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(reqs))
+	}
+	if !reqs[0].Pragmas.Stream {
+		t.Errorf("expected Stream pragma to be set, got %+v", reqs[0].Pragmas)
+	}
+}
+
 func TestParseMultipleRequestsAndUnknownPragma(t *testing.T) {
 	src := `### First
 GET https://example.com/a
@@ -108,6 +122,10 @@ Authorization: Bearer abc123
 		`### Basic auth
 GET {{host}}/me
 Authorization: Basic dXNlcjpwYXNz
+`,
+		`### Streaming SSE endpoint
+# @stream
+GET {{host}}/events
 `,
 	}
 

@@ -12,18 +12,28 @@ import (
 
 // Executor sends variable-expanded requests via a curl subprocess.
 type Executor struct {
-	runner Runner
+	runner       Runner
+	streamRunner StreamRunner
 }
 
 // NewExecutor returns an Executor backed by the real curl binary.
 func NewExecutor() *Executor {
-	return &Executor{runner: execRunner{}}
+	return &Executor{runner: execRunner{}, streamRunner: execStreamRunner{}}
 }
 
 // NewExecutorWithRunner returns an Executor backed by a custom Runner,
-// primarily for unit testing without invoking a real subprocess.
+// primarily for unit testing without invoking a real subprocess. Its
+// ExecuteStreaming path is left without a StreamRunner; use
+// NewExecutorWithRunners to also test streaming.
 func NewExecutorWithRunner(r Runner) *Executor {
 	return &Executor{runner: r}
+}
+
+// NewExecutorWithRunners returns an Executor backed by custom Runner and
+// StreamRunner implementations, for unit testing both Execute and
+// ExecuteStreaming without invoking a real subprocess.
+func NewExecutorWithRunners(r Runner, sr StreamRunner) *Executor {
+	return &Executor{runner: r, streamRunner: sr}
 }
 
 // BuildArgv returns the curl argv that would be used to execute req,

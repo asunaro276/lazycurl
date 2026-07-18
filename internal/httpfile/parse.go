@@ -130,6 +130,8 @@ func parsePragmaOrSkip(cur *Request, line string) {
 		cur.Pragmas.Timeout = value
 	case "@no-redirect":
 		cur.Pragmas.NoRedirect = true
+	case "@stream":
+		cur.Pragmas.Stream = true
 	default:
 		// Unknown pragma: ignore.
 	}

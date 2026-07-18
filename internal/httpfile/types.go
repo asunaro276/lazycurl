@@ -19,6 +19,7 @@ type Pragmas struct {
 	Insecure   bool   // @insecure -> curl -k
 	Timeout    string // @timeout <duration> -> curl --max-time
 	NoRedirect bool   // @no-redirect -> do not pass -L
+	Stream     bool   // @stream -> curl -N, body read incrementally from stdout
 }
 
 // AuthType identifies which authentication scheme a Request uses.

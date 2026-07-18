@@ -9,7 +9,7 @@
 - [ ] 2.2 `/status/{code}`: 指定したHTTPステータスコードで応答するハンドラを実装する
 - [ ] 2.3 `/redirect/{n}`: `n`回のリダイレクトを経て200を返すハンドラを実装する
 - [ ] 2.4 `/delay/{sec}`: 指定秒数待機してから応答するハンドラを実装する
-- [ ] 2.5 `/stream`: レスポンスbodyを`http.Flusher`で複数チャンクに分け、時間差で逐次送出するハンドラを実装する
+- [ ] 2.5 `/stream`: レスポンスbodyを`http.Flusher`で複数チャンクに分け、時間差で逐次送出するハンドラを実装する。分割数(`chunks`)・間隔(`interval`)をクエリパラメータで指定可能にする
 - [ ] 2.6 `/auth/basic`, `/auth/bearer`: `Authorization`ヘッダーを検証し、正誤に応じて200/401を返すハンドラを実装する
 - [ ] 2.7 各エンドポイントの単体テスト(`testing/mockserver`モジュール内、`net/http/httptest`使用)を追加する
 
@@ -36,6 +36,8 @@
 - [ ] 6.3 `@timeout`プラグマ付きリクエストで`/delay/{長い秒数}`を叩き、指定時間内にタイムアウトエラーになることを検証するテストを書く
 - [ ] 6.4 Basic/Bearer認証を設定したリクエストで`/auth/basic`・`/auth/bearer`を叩き、`Authorization`ヘッダーが正しく導出・送信されることを検証するテストを書く
 - [ ] 6.5 `/status/{code}`・`/echo`を用いて、ステータスコード・ヘッダー・bodyの取得(`-D`/`-o`/`-w '%{json}'`)が正しくパースされることを検証するテストを書く
+- [ ] 6.6 `Pragmas.Stream`を設定したリクエストで`Executor.ExecuteStreaming`を`/stream?chunks=3&interval=...`に対して呼び、`Done`到達前に複数回`Chunk`付き`StreamEvent`を受信すること、および自然終了時に全チャンク結合bodyが`StreamDone.Response.Body`と一致することを検証するテストを書く
+- [ ] 6.7 `ExecuteStreaming`に渡す`context`を送信途中でキャンセルし、`StreamDone.Response.Body`がキャンセル時点までの部分bodyになり`StreamDone.Err`が`nil`であることを検証するテストを書く
 
 ## 7. TUI E2Eテスト(teatest)
 
@@ -44,6 +46,8 @@
 - [ ] 7.3 `teatest.NewTestModel`で`tui.App`(`curlexec.NewExecutor()`による実curl実行)を起動し、モックサーバーを指すCollection/Requestを用意する
 - [ ] 7.4 Collectionsパネルへの移動・Request選択・送信に相当するキー入力を送り、モックサーバーが実際にHTTPリクエストを受信することを検証するテストを書く
 - [ ] 7.5 送信完了後、`teatest.WaitFor`等でResponseパネルの描画内容(ステータスコード等)をアサートするテストを書く
+- [ ] 7.6 `@stream`プラグマ付きリクエストで`/stream`(複数チャンク・間隔あり)を送信し、送信完了前の時点で`teatest.WaitFor`により部分的なbodyがResponseパネルに描画されていることを検証するテストを書く
+- [ ] 7.7 `@stream`送信中に`ctrl-c`相当のキー入力を送り、打ち切り時点までのbodyを持つレスポンスがHistoryパネルに確定表示されることを検証するテストを書く
 
 ## 8. ドキュメント
 

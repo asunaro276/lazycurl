@@ -2,7 +2,7 @@
 
 `internal/curlexec`の既存テスト(`executor_test.go`)は全て`Runner`インターフェースを`fakeRunner`に差し替えて検証しており、`buildArgs`(`internal/curlexec/argv.go`)が生成するargv(`-X`/`-H`/`-k`/`--max-time`/`-L`/`--data-binary`/`-D`/`-o`/`-w '%{json}'`)が実際のcurlバイナリ・実際のHTTPサーバーに対して正しく振る舞うかは一切検証されていない。
 
-加えて、進行中の`stream-response-body`変更(`openspec/changes/stream-response-body/`, 未着手)は`@stream`プラグマによる逐次配信(`-N`、stdoutパイプ経由読み取り)を実装する予定だが、そのtask 6.1は「SSEを返す簡易テストサーバーを用いた手動確認」を前提にしている。ファイルベースの`fakeRunner`ではプロセス起動・接続維持・チャンク到着タイミング・ctrl-c打ち切り・自然終了のいずれも再現できないため、この検証には本物のHTTPサーバーと本物のcurlプロセスが要る。
+加えて、`stream-response-body`変更(`openspec/changes/archive/2026-07-18-stream-response-body/`)は実装・アーカイブ済みで、`@stream`プラグマによる逐次配信(`internal/curlexec/streaming.go`の`Executor.ExecuteStreaming`、`buildArgs`での`-N`/`-o -`付与、`internal/tui/shell/update.go`の`streamChunkMsg`/`streamDoneMsg`によるResponseパネル逐次描画)は既にmainに存在する。しかしそのテストは`StreamRunner`を`fakeRunner`相当のモックに差し替えた単体テスト(`streaming_test.go`)のみで、実curlの`-N`・stdoutパイプ経由の逐次読み取りが本物のHTTP接続(チャンク到着タイミング・`ctrl-c`打ち切り・自然終了)に対して機能するか、また`teatest`同様Responseパネルの逐次描画が実際に起きるかは未検証。ファイルベースの`fakeRunner`/`StreamRunner`モックではプロセス起動・接続維持・チャンク到着タイミングのいずれも再現できないため、この検証には本物のHTTPサーバーと本物のcurlプロセスが要る。
 
 このリポジトリには現状CIが無く(CLAUDE.md参照)、Docker前提のテスト層を導入しても既存の`go test ./...`のスピード・安定性を損なわない設計にする必要がある(CI整備は別途後続で行う想定)。
 
@@ -18,7 +18,7 @@
 **Non-Goals:**
 - `@insecure`(TLS自己署名証明書)の実地検証は今回のスコープに含めない。素のHTTPで検証可能なフラグ群(`-X`/`-H`/`-L`/`--max-time`/`--data-binary`/`-D`/`-o`/`-w`)を優先し、TLS対応は後続の変更で扱う
 - E2EテストのCI組み込み・ビルドタグによる隔離は行わない。CI整備自体が別途後続の作業
-- SSEの`event:`/`data:`フレームパースなど、`stream-response-body`本体の実装は本変更のスコープ外。本変更はあくまで「その検証に使えるモックサーバーとE2Eテスト基盤」を提供する
+- SSEの`event:`/`data:`フレームパースなど、`stream-response-body`本体の実装(既に完了・アーカイブ済み)自体への変更は本変更のスコープ外。本変更はあくまで「その挙動を実curl・実TUIで検証するE2Eテスト基盤」を提供する
 - pty(擬似端末)経由でコンパイル済みバイナリそのものを操作する完全なブラックボックスE2E(`creack/pty`や`vhs`的なアプローチ)は採用しない。詳細は「Decisions」参照
 
 ## Decisions
@@ -66,7 +66,7 @@ TUIレベルのE2Eには以下の3段階を検討した:
 
 ### モックサーバーが提供するエンドポイント
 
-`buildArgs`が生成するcurlフラグの実地検証、および`stream-response-body`のtask 6.1(逐次表示・ctrl-c打ち切り・自然終了の確認)をカバーする最小セットとする:
+`buildArgs`が生成するcurlフラグの実地検証、および`@stream`(逐次表示・ctrl-c打ち切り・自然終了の確認)をカバーする最小セットとする:
 
 | エンドポイント | 検証対象 |
 |---|---|
@@ -74,8 +74,17 @@ TUIレベルのE2Eには以下の3段階を検討した:
 | `/status/{code}` | `-w '%{json}'`によるstatus code取得、`-D`ヘッダーファイル |
 | `/redirect/{n}` | `-L`(follow)、`@no-redirect`時の非follow |
 | `/delay/{sec}` | `--max-time`(`@timeout`)、ctrl-c打ち切り |
-| `/stream` | `@stream`時の`-N`・stdoutパイプ経由の逐次配信(chunkを時間差で送出) |
+| `/stream?chunks={n}&interval={ms}` | `@stream`時の`-N`/`-o -`・stdoutパイプ経由の逐次配信 |
 | `/auth/basic`, `/auth/bearer` | `Authorization`ヘッダーの導出(Basic/Bearer) |
+
+### `/stream`はチャンク数・間隔をクエリパラメータで制御可能にする
+
+`/stream`は固定のbodyを`chunks`個の断片に分割し、`interval`ミリ秒ごとに`http.Flusher`でflushしながら送出する(パラメータ省略時は妥当なデフォルト値を使う)。これにより:
+- `curlexec`のE2Eテストは、`Executor.ExecuteStreaming`が返す`<-chan StreamEvent`から複数回`StreamEvent{Chunk: ...}`を受け取ってから最後に`StreamEvent{Done: ...}`が届くこと(単発の一括受信ではないこと)を検証できる
+- `interval`を意図的に長くしたリクエストに対し、最初の数チャンク受信後に`context.CancelFunc`でキャンセルすることで、`ctrl-c`打ち切り相当のシナリオ(`StreamDone.Response.Body`が打ち切り時点までの部分bodyになり、`StreamDone.Err == nil`であること)を安定的に再現できる
+- キャンセルせず最後まで受信させることで、自然終了時に全chunkを連結したbodyが`StreamDone.Response.Body`と一致することを検証できる
+
+`teatest`ベースのTUI E2Eでも同じ`/stream`エンドポイントを使い、送信中(`streamDoneMsg`到達前)に`teatest.WaitFor`でResponseパネルに部分的なbody表示が現れることを確認したのち、完了まで待つケースと`ctrl-c`相当のキー入力で打ち切るケースの両方を検証する。
 
 ## Risks / Trade-offs
 
@@ -89,3 +98,4 @@ TUIレベルのE2Eには以下の3段階を検討した:
 
 - `@insecure`(TLS)の実地検証を将来的に追加する場合、`httptest.NewTLSServer`相当の自己署名証明書対応をモックサーバー自体に持たせるか、別エンドポイントとして分離するかは未決
 - モックサーバーのエンドポイント一覧は実装時に過不足が見つかる可能性があり、tasks側で調整の余地を残す
+- `/stream`の`ctrl-c`打ち切りシナリオで、テスト側が「何チャンク受信した時点でキャンセルするか」をどう安定的に決めるか(受信チャンク数をトリガーにするか、固定のsleepにするか)は実装時に確定させる

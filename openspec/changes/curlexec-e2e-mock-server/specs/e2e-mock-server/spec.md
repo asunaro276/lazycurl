@@ -20,7 +20,7 @@
 - `/status/{code}`: 指定したHTTPステータスコードで応答する
 - `/redirect/{n}`: `n`回のリダイレクトを経て最終的に200を返す
 - `/delay/{sec}`: 指定秒数待機してから応答する
-- `/stream`: レスポンスbodyを複数チャンクに分け、時間差(chunked transfer)で逐次送出する
+- `/stream`: レスポンスbodyを複数チャンクに分け、時間差(chunked transfer)で逐次送出する。分割数・送出間隔をクエリパラメータ(`chunks`/`interval`)で指定できる
 - `/auth/basic`, `/auth/bearer`: 送信された`Authorization`ヘッダーの妥当性を検証し、結果を返す
 
 #### Scenario: /statusが指定コードを返す
@@ -38,6 +38,10 @@
 #### Scenario: /streamがbodyを複数チャンクに分けて逐次送出する
 - **WHEN** `/stream`にリクエストを送る
 - **THEN** レスポンスbodyが単一の送出ではなく、時間差のある複数チャンクとしてクライアントに到達する
+
+#### Scenario: /streamのチャンク数・間隔をクエリパラメータで指定できる
+- **WHEN** `/stream?chunks=5&interval=500`にリクエストを送る
+- **THEN** レスポンスbodyが5個のチャンクに分かれ、約500ミリ秒間隔でクライアントに到達する
 
 #### Scenario: /auth/basicが正しい認証情報を検証する
 - **WHEN** 正しいユーザー名・パスワードで`Authorization: Basic ...`ヘッダーを付けて`/auth/basic`にリクエストを送る

@@ -37,7 +37,15 @@
 - [ ] 6.4 Basic/Bearer認証を設定したリクエストで`/auth/basic`・`/auth/bearer`を叩き、`Authorization`ヘッダーが正しく導出・送信されることを検証するテストを書く
 - [ ] 6.5 `/status/{code}`・`/echo`を用いて、ステータスコード・ヘッダー・bodyの取得(`-D`/`-o`/`-w '%{json}'`)が正しくパースされることを検証するテストを書く
 
-## 7. ドキュメント
+## 7. TUI E2Eテスト(teatest)
 
-- [ ] 7.1 `CLAUDE.md`の「Commands」セクションに、E2Eテストの実行方法(`go test ./internal/curlexec/...`、Dockerが必要である旨)を追記する
-- [ ] 7.2 `CLAUDE.md`または`testing/mockserver/`直下に、`docker compose up`での手動起動方法を追記する
+- [ ] 7.1 root moduleに`teatest`(`github.com/charmbracelet/x/exp/teatest`)を依存として追加する(`go get`)
+- [ ] 7.2 `internal/tui`にE2Eテスト用ファイルを追加し、`TestMain`で`testing/mockserver`コンテナを1回だけ起動する(`internal/curlexec`と同様のsingletonパターン、コンテナはパッケージ単位で独立)
+- [ ] 7.3 `teatest.NewTestModel`で`tui.App`(`curlexec.NewExecutor()`による実curl実行)を起動し、モックサーバーを指すCollection/Requestを用意する
+- [ ] 7.4 Collectionsパネルへの移動・Request選択・送信に相当するキー入力を送り、モックサーバーが実際にHTTPリクエストを受信することを検証するテストを書く
+- [ ] 7.5 送信完了後、`teatest.WaitFor`等でResponseパネルの描画内容(ステータスコード等)をアサートするテストを書く
+
+## 8. ドキュメント
+
+- [ ] 8.1 `CLAUDE.md`の「Commands」セクションに、E2Eテストの実行方法(`go test ./internal/curlexec/...`、`go test ./internal/tui/...`、Dockerが必要である旨)を追記する
+- [ ] 8.2 `CLAUDE.md`または`testing/mockserver/`直下に、`docker compose up`での手動起動方法を追記する

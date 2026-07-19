@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```sh
 go build -o lazycurl ./cmd/lazycurl   # build
 ./lazycurl                            # run
-go test ./...                         # run all tests
+go test ./...                         # run all tests (requires Docker, see below)
 go test ./internal/tui/...            # run a package's tests
 go test ./internal/httpfile/ -run TestParse -v   # run a single test
 go fmt ./...                          # format
@@ -19,6 +19,21 @@ go mod tidy                           # sync go.sum
 ```
 
 There is no Makefile or lint config in this repo — `go build`, `go test`, and `go fmt` are the only gates. GitHub Actions CI (`.github/workflows/ci.yml`) runs `go build ./...`, `go test ./...`, and `gofmt -l` on every push, to any branch. There is no `golangci-lint` config file; don't assume lint rules beyond `go vet`/`gofmt`.
+
+### E2E tests (requires Docker)
+
+`internal/curlexec` and `internal/tui` each contain an E2E test suite, in addition to their existing `fakeRunner`-based unit tests, that exercises the real `curl` binary (and, for `internal/tui`, a real `tea.Program` via `teatest`) against `testing/mockserver` — a mock HTTP server built and started on demand via `testcontainers-go`. These tests are not behind a build tag; they run as part of `go test ./...` and require a running Docker daemon (each package's `TestMain` builds `testing/mockserver/Dockerfile` and starts one container, shared by every test case in that package, terminated when the test binary exits):
+
+```sh
+go test ./internal/curlexec/...   # curl argv (-L/--max-time/auth/-w) + @stream, against real curl + mockserver
+go test ./internal/tui/...        # key-driven send -> Response panel rendering, against a real tea.Program
+```
+
+Without Docker available, these two packages fail at `TestMain` and `go test ./...` as a whole fails; this is a known, accepted gap rather than a bug — there is no CI integration or build-tag isolation for these tests yet.
+
+### Mock server (manual verification)
+
+`testing/mockserver/` is a standalone Go module (its own `go.mod`, no dependency on the root module or vice versa) providing HTTP endpoints for exercising curl argv by hand or from the E2E suites above: `/echo`, `/status/{code}`, `/redirect/{n}`, `/delay/{sec}`, `/stream?chunks=&interval=`, `/auth/basic`, `/auth/bearer`. Run it locally with `docker compose up` (repo root `docker-compose.yml`, which builds `testing/mockserver/Dockerfile` and publishes it on `localhost:8080`), then point a `.http` request (or plain `curl`) at it — this is the primary way to visually confirm `@stream` incremental rendering and `ctrl-c` cutoff in the real TUI.
 
 ### Release process
 

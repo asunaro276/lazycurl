@@ -1,15 +1,24 @@
 # lazycurl
 
-lazygit/lazydocker/lazysql にインスパイアされた、ターミナルで完結するHTTPクライアント。
-自前のHTTPクライアント実装ではなく `curl` をサブプロセスとして呼び出し、その結果をTUIで確認できます。
+```
+ _                                 _ 
+| | __ _ _____   _  ___ _   _ _ __| |
+| |/ _` |_  / | | |/ __| | | | '__| |
+| | (_| |/ /| |_| | (__| |_| | |  | |
+|_|\__,_/___|\__, |\___|\__,_|_|  |_|
+             |___/
+```
 
-## インストール
+A keyboard-driven, terminal-only HTTP client inspired by lazygit/lazydocker/lazysql.
+Instead of implementing its own HTTP client, lazycurl shells out to `curl` and lets you inspect the results in a TUI.
+
+## Installation
 
 ```sh
 go install github.com/asunaro276/lazycurl/cmd/lazycurl@latest
 ```
 
-または、このリポジトリをクローンしてビルドします。
+Or clone this repository and build it yourself.
 
 ```sh
 git clone https://github.com/asunaro276/lazycurl.git
@@ -17,60 +26,82 @@ cd lazycurl
 go build -o lazycurl ./cmd/lazycurl
 ```
 
-### 依存: `curl`
+### Dependency: `curl`
 
-lazycurlはリクエストの実行に `curl` バイナリを使用します。事前に `curl` がインストールされている必要があります(バージョン7.70以上を推奨。`-w '%{json}'` によるレスポンスメタデータ取得に必要です)。
+lazycurl uses the `curl` binary to execute requests. `curl` must already be installed (version 7.70 or later is recommended, since `-w '%{json}'` is required to fetch response metadata).
 
 ```sh
 curl --version
 ```
 
-`curl` が見つからない場合、lazycurlは起動時にエラーを表示して終了します。7.70未満の場合は警告を表示した上で起動します。
+If `curl` is not found, lazycurl shows an error and exits on startup. If the version is below 7.70, it shows a warning but still starts.
 
-## 使い方
+## Usage
 
 ```sh
 lazycurl
 ```
 
-### Adhoc / Collections モード
+### The shell: four always-visible panels
 
-lazycurlは`Adhoc`と`Collections`の2モードを持ち、`[`/`]`キーでいつでも切り替えられます。アクティブなモードは画面上部のタブでハイライト表示されます。起動時のデフォルトは`Adhoc`モードです。
+lazycurl has no modes. On startup you always see the same fixed 2x2 grid of panels: **Request** (top-left), **Response** (top-right), **Collections** (bottom-left), **History** (bottom-right). There is no separate Adhoc/Collections mode and no layout to switch between.
 
-- **Adhoc**: コレクションを作成・選択しなくても、その場でリクエストを組み立てて送信できるモード。編集フォーム+Response+Historyの3ペインで構成されます。組み立てたリクエストは保存する(`s`キー)までメモリ内にのみ存在し、`{{variable}}`展開も行われません。
-- **Collections**: 従来通りのCollections/Requests/Response/Historyの4パネルレイアウト。コレクション単位でリクエストを管理し、environment変数の展開・切り替えができます。
+- **Request**: the request-editing form (Name/Method/URL, then Params/Headers/Auth/Body tabs). It always shows either a scratch request that doesn't belong to any collection yet, or a request loaded from a collection via the Collections panel. Edits are kept in memory only; nothing is written to disk until you save (`ctrl+s`).
+- **Response**: shows the result of whichever request was last sent, or a selected History entry. Display-only.
+- **Collections**: an accordion list of your collections. The collection under the cursor is expanded inline to show its requests; pressing `enter` on a request loads it into the Request panel.
+- **History**: every request/response pair you've sent, oldest first. Selecting an entry (`enter`) shows it in the Response panel.
 
-Adhocモードで組み立てたリクエストは`s`キーでいつでも保存できます。既存コレクションを選ぶか新規コレクションを作成するかを選択でき、保存後は自動的に`Collections`モードへ切り替わり、保存先のコレクション・リクエストが選択された状態になります。実行履歴(History)は両モードで共有されます。
+A scratch request built in the Request panel can be saved at any time with `ctrl+s`. If it has no name yet, you're prompted for one first; then you choose an existing collection or create a new one to save it into. The request stays loaded in the Request panel afterward, now bound to that collection.
 
-### キーバインド(lazygit互換)
+### Keybindings (lazygit-style)
 
-| キー | 動作 |
+| Key | Action |
 | --- | --- |
-| `[` / `]` | Adhoc/Collectionsモードの切り替え |
-| `tab` / `shift+tab` | パネル間移動 |
-| `1`-`4` | パネルへジャンプ(Adhocモードでは1-3: Editor/Response/History、Collectionsモードでは1-4: Collections/Requests/Response/History) |
-| `j` / `k` | 上下移動 |
-| `enter` | 選択項目を送信・確定(Adhocモードでは組み立て中のリクエストを送信) |
-| `n` | 新規作成(コレクション/リクエスト) |
-| `e` | リクエストの編集(Adhocモードでは組み立て中のリクエストを編集) |
-| `s` | Adhocモードのリクエストをコレクションへ保存 |
-| `c` | リクエストの複製 |
-| `d` / `x` | リクエストの削除 |
-| `E` | environmentの切り替え |
-| `?` | ヘルプ表示 |
-| `q` / `ctrl-c` | 終了(送信中は中断) |
+| `tab` / `shift+tab` | Move between panels |
+| `0`-`3` | Jump directly to a panel (Request/Response/Collections/History) |
+| `j` / `k` | Move up/down within the focused panel |
+| `?` | Show help |
+| `q` / `ctrl-c` | Quit (cancels the in-flight request if one is sending) |
 
-リクエスト編集フォーム内では `ctrl-s` で保存、`ctrl-q` で破棄して戻ります。Bodyタブでは `ctrl-e` で `$EDITOR` を起動し、外部エディタでの編集内容を再読み込みします。
+**Collections panel:**
 
-## コレクションの保存形式
+| Key | Action |
+| --- | --- |
+| `enter` | Load the request under the cursor into the Request panel |
+| `n` | Create a new request in the expanded collection |
+| `N` | Create a new collection |
+| `c` | Duplicate the request under the cursor |
+| `d` / `x` | Delete the request under the cursor (with confirmation) |
+| `E` | Switch the active environment for this collection |
 
-リクエストは `~/.config/lazycurl/` 配下にグローバルに保存されます(プロジェクトローカルではありません)。
+**Request panel:**
+
+| Key | Action |
+| --- | --- |
+| `enter` | Enter insert mode on the focused field |
+| `esc` | Leave insert mode |
+| `h` / `l` | Change the HTTP method (normal state) |
+| `[` / `]` | Switch the Params/Headers/Auth/Body tab (normal state) |
+| `ctrl+r` | Send the request |
+| `ctrl+s` | Save the request (prompts for a name first if unnamed) |
+
+In the Body tab, `ctrl-e` launches `$EDITOR` and reloads the file's contents once the external editor process exits.
+
+**History panel:**
+
+| Key | Action |
+| --- | --- |
+| `enter` | Show the selected entry in the Response panel |
+
+## Collection storage format
+
+Requests are stored globally under `~/.config/lazycurl/` (not project-local).
 
 ```
 ~/.config/lazycurl/
-├── state.json                       # アクティブenvironmentなどの状態
+├── state.json                       # state such as the active environment
 └── collections/
-    ├── <collection-name>.http       # 1コレクション = 1ファイル、###区切りで複数リクエスト
+    ├── <collection-name>.http       # one file per collection, multiple requests separated by ###
     └── env/
         └── <collection-name>/
             ├── dev.env.json
@@ -78,7 +109,7 @@ Adhocモードで組み立てたリクエストは`s`キーでいつでも保存
             └── prod.env.json
 ```
 
-コレクションファイルは [IntelliJ HTTP Client](https://www.jetbrains.com/help/idea/http-client-in-product-code-editor.html) / [VS Code REST Client](https://marketplace.visualstudio.com/items?itemName=humao.rest-client) 互換の `.http` 形式に、curl固有オプション用の軽量なプラグマコメントを加えた形式です。
+Collection files use the [IntelliJ HTTP Client](https://www.jetbrains.com/help/idea/http-client-in-product-code-editor.html) / [VS Code REST Client](https://marketplace.visualstudio.com/items?itemName=humao.rest-client)-compatible `.http` format, extended with lightweight pragma comments for curl-specific options.
 
 ```http
 ### Get user (self-signed dev server)
@@ -88,19 +119,23 @@ GET {{host}}/users/{{id}}
 Authorization: Bearer {{token}}
 ```
 
-対応プラグマ:
+Supported pragmas:
 
-| プラグマ | 変換先 |
+| Pragma | Translates to |
 | --- | --- |
-| `# @insecure` | `curl -k`(TLS検証をスキップ) |
-| `# @timeout <duration>` | `curl --max-time <秒数>` |
-| `# @no-redirect` | リダイレクトを追従しない(付与しない場合はデフォルトで `-L` が付く) |
-| `# @stream` | `curl -N`(バッファリング無効化)。bodyを一時ファイル経由ではなく標準出力から逐次読み取り、Responseパネルに到着のたびに追記表示する |
+| `# @insecure` | `curl -k` (skip TLS verification) |
+| `# @timeout <duration>` | `curl --max-time <seconds>` |
+| `# @no-redirect` | Do not follow redirects (`-L` is added by default if this is omitted) |
+| `# @stream` | `curl -N` (disable buffering). The body is read incrementally from stdout instead of via a temp file, and is appended to the Response pane as it arrives |
 
-未知のプラグマ行は無視されるため、他ツールで開いても壊れません。
+Unknown pragma lines are ignored, so files still open correctly in other tools.
 
-`@stream` はSSE(Server-Sent Events)のような接続維持型のレスポンスを送信中から確認したい場合にオプトインするプラグマです。付与すると、送信完了(またはctrl-cによる中断)を待たずにResponseパネルへbodyが逐次表示されます。応答時間はcurlの`-w`計測ではなくGo側の実測経過時間になります。中断した場合も、それまでに受信したbodyが最終的なレスポンスとして履歴に記録されます。
+`@stream` is an opt-in pragma for watching a long-lived response, such as Server-Sent Events (SSE), as it comes in. When set, the body is displayed incrementally in the Response pane without waiting for the request to finish (or to be cancelled with ctrl-c). Response time is measured as Go-side elapsed wall time rather than curl's `-w` timing. If the request is cancelled, whatever body was received up to that point is still recorded as the final response in history.
 
-## environmentと変数展開
+## Environments and variable expansion
 
-`{{variable}}` はアクティブなenvironment(`env/<collection>/<name>.env.json`)の値で展開されてから `curl` に渡されます。未定義の変数を参照している場合、送信前にエラーとして表示され、送信は行われません。
+`{{variable}}` placeholders are expanded using values from the active environment (`env/<collection>/<name>.env.json`) before being passed to `curl`. If a request references an undefined variable, an error is shown before sending and the request is not sent.
+
+## License
+
+lazycurl is licensed under the [MIT License](LICENSE).

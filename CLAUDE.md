@@ -20,6 +20,29 @@ go mod tidy                           # sync go.sum
 
 There is no CI config, Makefile, or lint config in this repo — `go build`, `go test`, and `go fmt` are the only gates. There is no `golangci-lint` config file despite it being mentioned in `docs/claude-code-remote-setup.md`; don't assume lint rules beyond `go vet`/`gofmt`.
 
+### E2E tests (Docker required)
+
+`internal/curlexec` and `internal/tui` each contain an `e2e_test.go` alongside their regular unit tests, in the same package (no build tags separate them):
+
+```sh
+go test ./internal/curlexec/...   # includes real-curl + testcontainers-go E2E tests
+go test ./internal/tui/...        # includes teatest-driven E2E tests
+```
+
+These tests require a running Docker daemon: each package's `TestMain` uses `testcontainers-go` to build `testing/mockserver/Dockerfile` and start one shared mockserver container for the whole package (a fresh container per package, not per test case). Without Docker available, `TestMain` fails and **every test in that package** fails to run, including the pre-existing non-E2E tests in the same package — there is no build-tag isolation (see `openspec/changes/archive/` for the accepted trade-off).
+
+`internal/curlexec`'s E2E tests drive `curlexec.NewExecutor()` (real curl subprocesses) against the mockserver container to verify argv flags (`-L`, `--max-time`, Basic/Bearer auth, `-w '%{json}'` parsing) and `@stream` chunked delivery/cancellation end-to-end. `internal/tui`'s E2E tests drive `tui.App` as a real `tea.Program` via `teatest`, sending key input to navigate Collections, select a request, and send it, then assert on the rendered terminal output.
+
+### Mock HTTP server for manual testing
+
+`testing/mockserver/` is a standalone Go module (its own `go.mod`, no relation to lazycurl's dependency graph) providing endpoints for exercising curl argv behavior by hand: `/echo`, `/status/{code}`, `/redirect/{n}`, `/delay/{sec}`, `/stream?chunks=&interval=`, `/auth/basic`, `/auth/bearer`. Run it locally with:
+
+```sh
+docker compose up   # builds testing/mockserver/Dockerfile, exposes it on localhost:8089
+```
+
+Point a `.http` request's URL at `http://localhost:8089/...` (e.g. with the `@stream` pragma against `/stream?chunks=5&interval=500`) to watch lazycurl's TUI handle real chunked responses, redirects, timeouts, etc.
+
 ## Architecture
 
 ### Data flow: file -> parse -> expand -> exec -> response

@@ -1,0 +1,6 @@
+services:
+  mockserver:
+    build:
+      context: ./testing/mockserver
+    ports:
+      - "8089:8080"

@@ -55,15 +55,15 @@ Bodyはテキストエリアで編集できなければならない(SHALL)。ま
 - **THEN** 現在のBody内容が一時ファイルに書き出され、`$EDITOR`が起動する。エディタ終了後、ファイルの内容がBodyとして再読み込みされる
 
 ### Requirement: リクエストの新規作成・複製・削除
-lazycurlはリクエストを新規作成・複製・削除できなければならない(SHALL)。新規作成は、collectionに属した状態(`Collections`モード)、またはcollectionに属さない状態(`Adhoc`モード)のいずれでも行えなければならない(SHALL)。複製・削除は既存のcollection内リクエストに対してのみ行う。
+lazycurlはリクエストを新規作成・複製・削除できなければならない(SHALL)。新規作成は、collectionに属した状態、またはcollectionに属さない状態のいずれでも`[0] Request`パネルで行えなければならない(SHALL)。複製・削除は既存のcollection内リクエストに対してのみ行う。
 
 #### Scenario: コレクション内での新規リクエストの作成
-- **WHEN** ユーザーが`Collections`モードのコレクション内で新規リクエスト作成を実行する
-- **THEN** 空のMethod/URL/Headers/Bodyを持つ新しいリクエストがフォームで開かれ、保存するとコレクションファイルに`###`ブロックとして追記される
+- **WHEN** ユーザーが`[2] Collections`パネルで選択中のコレクション内で新規リクエスト作成を実行する
+- **THEN** 空のMethod/URL/Headers/Bodyを持つ新しいリクエストが`[0] Request`パネルで開かれ、保存するとコレクションファイルに`###`ブロックとして追記される
 
 #### Scenario: collectionに属さない新規リクエストの作成
-- **WHEN** ユーザーが`Adhoc`モードで新規リクエストを組み立てる
-- **THEN** 空のMethod/URL/Headers/Bodyを持つ新しいリクエストがフォームで開かれるが、いずれのcollectionファイルにも追記されない
+- **WHEN** ユーザーが`[0] Request`パネルでcollectionを選択せずに新規リクエストを組み立てる
+- **THEN** 空のMethod/URL/Headers/Bodyを持つ新しいリクエストが編集できるが、いずれのcollectionファイルにも追記されない
 
 #### Scenario: リクエストの複製
 - **WHEN** ユーザーが既存のリクエストを複製する

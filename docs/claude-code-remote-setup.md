@@ -193,15 +193,11 @@ go test ./...
 # Test a specific package
 go test ./internal/tui/...
 
-# Format
-go fmt ./...
-
-# Lint (requires golangci-lint)
-golangci-lint run
-
 # Sync go.sum
 go mod tidy
 ```
+
+> **About lint**: no additional lint tool such as `golangci-lint` is set up. Only `go vet` and `gofmt` are checked (same in CI).
 
 ### Standard feature workflow (via openspec)
 

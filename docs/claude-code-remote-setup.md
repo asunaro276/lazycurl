@@ -196,12 +196,11 @@ go test ./internal/tui/...
 # フォーマット
 go fmt ./...
 
-# Lint（golangci-lint が必要）
-golangci-lint run
-
 # go.sum の更新
 go mod tidy
 ```
+
+> **Lint について**: `golangci-lint` などの追加lintツールは未導入です。`go vet` と `gofmt` の範囲のみをチェック対象とします（CI でも同様）。
 
 ### 機能追加の標準フロー（openspec 連携）
 

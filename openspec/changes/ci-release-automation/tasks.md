@@ -1,8 +1,8 @@
 ## 1. CIワークフロー
 
-- [ ] 1.1 `.github/workflows/ci.yml` を作成し、`main`へのpushおよび任意ブランチからのpull requestをトリガーに `go build ./...` を実行するジョブを定義する
-- [ ] 1.2 同ワークフローに `go test ./...` を実行するジョブ(または既存ジョブ内のステップ)を追加する
-- [ ] 1.3 同ワークフローに `gofmt -l` の出力が空であることを検証するジョブ(または既存ジョブ内のステップ)を追加する。差分が存在する場合はジョブを失敗させる
+- [x] 1.1 `.github/workflows/ci.yml` を作成し、`main`へのpushおよび任意ブランチからのpull requestをトリガーに `go build ./...` を実行するジョブを定義する
+- [x] 1.2 同ワークフローに `go test ./...` を実行するジョブ(または既存ジョブ内のステップ)を追加する
+- [x] 1.3 同ワークフローに `gofmt -l` の出力が空であることを検証するジョブ(または既存ジョブ内のステップ)を追加する。差分が存在する場合はジョブを失敗させる
 - [ ] 1.4 `main`向けのテストPRを作成し、3つのチェックがそれぞれ正しく成功/失敗を報告することを確認する
 
 ## 2. releaseブランチとリポジトリ設定
@@ -14,11 +14,11 @@
 
 ## 3. リリースタグ付けワークフロー
 
-- [ ] 3.1 `.github/workflows/release.yml` を作成し、`pull_request`イベントの`closed`タイプをトリガーに設定する
-- [ ] 3.2 ジョブの実行条件を `github.event.pull_request.merged == true` かつ base ブランチが`release`かつ head ブランチが`version/`で始まる、に限定する
-- [ ] 3.3 head ブランチ名から`version/`プレフィックスを除去してタグ名(`vX.Y.Z`)を導出するステップを実装する
-- [ ] 3.4 導出したタグ名で `pull_request.merge_commit_sha` に対して git タグを作成し、リモートにpushするステップを実装する(ワークフローに`contents: write`権限を付与する)
-- [ ] 3.5 作成したタグを対象に、GitHubの自動生成リリースノート機能を用いてGitHub Releaseを作成するステップを実装する
+- [x] 3.1 `.github/workflows/release.yml` を作成し、`pull_request`イベントの`closed`タイプをトリガーに設定する
+- [x] 3.2 ジョブの実行条件を `github.event.pull_request.merged == true` かつ base ブランチが`release`かつ head ブランチが`version/`で始まる、に限定する
+- [x] 3.3 head ブランチ名から`version/`プレフィックスを除去してタグ名(`vX.Y.Z`)を導出するステップを実装する
+- [x] 3.4 導出したタグ名で `pull_request.merge_commit_sha` に対して git タグを作成し、リモートにpushするステップを実装する(ワークフローに`contents: write`権限を付与する)
+- [x] 3.5 作成したタグを対象に、GitHubの自動生成リリースノート機能を用いてGitHub Releaseを作成するステップを実装する
 
 ## 4. 動作確認
 
@@ -31,5 +31,5 @@
 
 ## 5. ドキュメント更新
 
-- [ ] 5.1 `CLAUDE.md`のCommandsセクションに、CIが存在すること・リリース手順(`version/vX.Y.Z`ブランチの切り方から`release`へのマージまで)の概要を追記する
-- [ ] 5.2 `docs/claude-code-remote-setup.md`の`golangci-lint`への言及を、実体(未導入・`go vet`/`gofmt`のみが対象)に合わせて修正する
+- [x] 5.1 `CLAUDE.md`のCommandsセクションに、CIが存在すること・リリース手順(`version/vX.Y.Z`ブランチの切り方から`release`へのマージまで)の概要を追記する
+- [x] 5.2 `docs/claude-code-remote-setup.md`の`golangci-lint`への言及を、実体(未導入・`go vet`/`gofmt`のみが対象)に合わせて修正する

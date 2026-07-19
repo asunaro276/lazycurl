@@ -18,7 +18,15 @@ go fmt ./...                          # format
 go mod tidy                           # sync go.sum
 ```
 
-There is no CI config, Makefile, or lint config in this repo — `go build`, `go test`, and `go fmt` are the only gates. There is no `golangci-lint` config file despite it being mentioned in `docs/claude-code-remote-setup.md`; don't assume lint rules beyond `go vet`/`gofmt`.
+There is no Makefile or lint config in this repo — `go build`, `go test`, and `go fmt` are the only gates. GitHub Actions CI (`.github/workflows/ci.yml`) runs `go build ./...`, `go test ./...`, and `gofmt -l` on every push to `main` and every pull request. There is no `golangci-lint` config file; don't assume lint rules beyond `go vet`/`gofmt`.
+
+### Release process
+
+Releases are cut from a fixed `release` branch, separate from `main`:
+
+1. Create a disposable `version/vX.Y.Z` branch from the latest `main` and push it.
+2. Open a pull request from `version/vX.Y.Z` into `release`. `version/**` branches disallow direct pushes (branch protection), and `release` requires the CI checks above to pass before merging.
+3. Merging the pull request triggers `.github/workflows/release.yml`, which tags the merge commit `vX.Y.Z` (derived from the branch name), pushes the tag, and creates a GitHub Release with auto-generated notes. The merged `version/vX.Y.Z` branch is then deleted automatically.
 
 ## Architecture
 

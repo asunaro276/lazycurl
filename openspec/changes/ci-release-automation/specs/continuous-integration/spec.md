@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: push/PR時のビルド検証
-システムは、`main`への push または任意ブランチからの pull request 作成・更新のたびに `go build ./...` を実行し、ビルドが失敗した場合はチェックを失敗として報告しなければならない(SHALL)。
+システムは、任意ブランチへの push または pull request 作成・更新のたびに `go build ./...` を実行し、ビルドが失敗した場合はチェックを失敗として報告しなければならない(SHALL)。
 
 #### Scenario: ビルドが通るコミット
 - **WHEN** ビルドエラーの無いコミットを含む pull request が作成・更新される
@@ -12,7 +12,7 @@
 - **THEN** ビルド検証ジョブは失敗として報告される
 
 ### Requirement: push/PR時のテスト検証
-システムは、`main`への push または任意ブランチからの pull request 作成・更新のたびに `go test ./...` を実行し、失敗したテストがある場合はチェックを失敗として報告しなければならない(SHALL)。
+システムは、任意ブランチへの push または pull request 作成・更新のたびに `go test ./...` を実行し、失敗したテストがある場合はチェックを失敗として報告しなければならない(SHALL)。
 
 #### Scenario: 全テストが通るコミット
 - **WHEN** 全パッケージのテストが成功するコミットを含む pull request が作成・更新される
@@ -23,7 +23,7 @@
 - **THEN** テスト検証ジョブは失敗として報告される
 
 ### Requirement: push/PR時のフォーマット検証
-システムは、`main`への push または任意ブランチからの pull request 作成・更新のたびに `gofmt` による差分の有無を検証し、`gofmt`未適用のファイルが存在する場合はチェックを失敗として報告しなければならない(SHALL)。
+システムは、任意ブランチへの push または pull request 作成・更新のたびに `gofmt` による差分の有無を検証し、`gofmt`未適用のファイルが存在する場合はチェックを失敗として報告しなければならない(SHALL)。
 
 #### Scenario: フォーマット済みのコミット
 - **WHEN** 全ファイルが `gofmt` 適用済みの状態のコミットを含む pull request が作成・更新される

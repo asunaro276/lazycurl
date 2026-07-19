@@ -1,47 +1,47 @@
-# lazycurl — Claude Code リモートセッション 環境構築ガイド
+# lazycurl — Claude Code Remote Session Setup Guide
 
-本ドキュメントは、`lazycurl` リポジトリを **Claude Code のリモートセッション**で開発するための環境構築手順をまとめたものです。
-
----
-
-## 目次
-
-1. [前提条件](#前提条件)
-2. [リポジトリのクローン](#リポジトリのクローン)
-3. [Claude Code リモートセッションの起動](#claude-code-リモートセッションの起動)
-4. [プロジェクト固有の初期設定](#プロジェクト固有の初期設定)
-5. [openspec のインストールと設定](#openspec-のインストールと設定)
-6. [開発ワークフロー](#開発ワークフロー)
-7. [プロジェクト構成の概要](#プロジェクト構成の概要)
-8. [カスタムスラッシュコマンド（/opsx）](#カスタムスラッシュコマンドopsx)
-9. [注意事項・トラブルシューティング](#注意事項トラブルシューティング)
+This document describes how to set up the `lazycurl` repository for development in a **Claude Code remote session**.
 
 ---
 
-## 前提条件
+## Table of Contents
 
-以下のツール・アカウントが必要です。
+1. [Prerequisites](#prerequisites)
+2. [Cloning the repository](#cloning-the-repository)
+3. [Starting a Claude Code remote session](#starting-a-claude-code-remote-session)
+4. [Project-specific setup](#project-specific-setup)
+5. [Installing and configuring openspec](#installing-and-configuring-openspec)
+6. [Development workflow](#development-workflow)
+7. [Project structure overview](#project-structure-overview)
+8. [Custom slash commands (/opsx)](#custom-slash-commands-opsx)
+9. [Notes and troubleshooting](#notes-and-troubleshooting)
 
-### 必須ツール
+---
 
-| ツール | 推奨バージョン | 確認コマンド |
+## Prerequisites
+
+You'll need the following tools and accounts.
+
+### Required tools
+
+| Tool | Recommended version | Check command |
 |--------|--------------|------------|
-| Go | 1.24.7 以上 | `go version` |
-| curl | 7.70 以上 | `curl --version` |
-| git | 任意 | `git --version` |
-| Claude Code CLI | 最新版 | `claude --version` |
-| Node.js / npm | LTS 版 | `node --version` |
+| Go | 1.24.7 or later | `go version` |
+| curl | 7.70 or later | `curl --version` |
+| git | any | `git --version` |
+| Claude Code CLI | latest | `claude --version` |
+| Node.js / npm | LTS | `node --version` |
 
-> **curl のバージョンについて**: lazycurl は `-w '%{json}'` オプションを利用してレスポンスメタデータを取得します。curl 7.70 未満の場合は警告が表示され、一部機能が制限されます。
+> **About the curl version**: lazycurl uses the `-w '%{json}'` option to fetch response metadata. On curl versions below 7.70, a warning is shown and some features are limited.
 
-### 必要なアカウント
+### Required accounts
 
-- **Anthropic アカウント**（Claude Code を利用するため）
-- GitHub へのアクセス権（リポジトリのクローン用）
+- An **Anthropic account** (to use Claude Code)
+- GitHub access (to clone the repository)
 
 ---
 
-## リポジトリのクローン
+## Cloning the repository
 
 ```sh
 git clone https://github.com/asunaro276/lazycurl.git
@@ -50,55 +50,55 @@ cd lazycurl
 
 ---
 
-## Claude Code リモートセッションの起動
+## Starting a Claude Code remote session
 
-### 1. Claude Code CLI のインストール（未インストールの場合）
+### 1. Install the Claude Code CLI (if not already installed)
 
 ```sh
 npm install -g @anthropic-ai/claude-code
 ```
 
-### 2. 認証
+### 2. Authenticate
 
 ```sh
 claude auth login
 ```
 
-ブラウザが開き、Anthropic アカウントでの認証を求められます。
+A browser window opens and asks you to authenticate with your Anthropic account.
 
-### 3. リモートセッションの起動
+### 3. Start the remote session
 
-リポジトリのルートで以下を実行します。
+Run the following from the repository root.
 
 ```sh
 cd ~/sandbox/lazycurl
 claude
 ```
 
-> **WSL 上での起動**: Windows から WSL 環境へのリモートセッションとして利用する場合は、WSL ターミナル内で上記コマンドを実行してください。Claude Code は WSL 上の Linux 環境をネイティブに扱えます。
+> **Running under WSL**: If you're using this as a remote session into a WSL environment from Windows, run the command above inside the WSL terminal. Claude Code handles a Linux environment on WSL natively.
 
 ---
 
-## プロジェクト固有の初期設定
+## Project-specific setup
 
-### Go 依存関係のインストール
+### Installing Go dependencies
 
 ```sh
 go mod download
 ```
 
-全依存パッケージ（Bubble Tea、lipgloss、bubbles など）がダウンロードされます。
+This downloads all dependencies (Bubble Tea, lipgloss, bubbles, etc.).
 
-### ビルド確認
+### Verifying the build
 
 ```sh
 go build -o lazycurl ./cmd/lazycurl
 ./lazycurl
 ```
 
-### `.claude/settings.local.json` について
+### About `.claude/settings.local.json`
 
-`.claude/settings.local.json` はユーザーごとのローカル権限設定ファイルで、Claude Code の慣習上リポジトリにはコミットされません(このリポジトリにも含まれていません)。openspec コマンドなどの実行をセッションごとに毎回許可したくない場合は、各自で以下の内容を作成してください。
+`.claude/settings.local.json` is a per-user local permission settings file. By Claude Code convention, it is not committed to the repository (and is not present in this repository either). If you don't want to be asked to approve commands like `openspec` every session, create the following file yourself.
 
 ```json
 {
@@ -110,123 +110,120 @@ go build -o lazycurl ./cmd/lazycurl
 }
 ```
 
-必要に応じて `WebFetch(domain:github.com)` や、ファイル整理用の `mv` / `rmdir` などの許可も追加できます。
+You can also add permissions such as `WebFetch(domain:github.com)` or file-management commands like `mv` / `rmdir` as needed.
 
 ---
 
-## openspec のインストールと設定
+## Installing and configuring openspec
 
-`openspec` は本プロジェクトが採用している **仕様駆動開発（Spec-Driven Development）** のための CLI ツールです。Claude Code との連携でスペック・プロポーザル・タスクを自動生成する役割を担います。
+`openspec` is the CLI tool used by this project's **spec-driven development** workflow. It works together with Claude Code to generate specs, proposals, and tasks automatically.
 
-### インストール
+### Installation
 
-npm の `openspec` パッケージ名は無関係の別プロジェクトに占有されているため、必ずスコープ付きパッケージ名でインストールしてください。
+The npm package name `openspec` is taken by an unrelated project, so make sure to install the scoped package name instead.
 
 ```sh
 npm install -g @fission-ai/openspec
 ```
 
-> インストール後、`openspec --version` でバージョンが表示されることを確認してください。
+> After installing, confirm the version with `openspec --version`.
 
-### 動作確認
+### Verifying it works
 
 ```sh
-# リポジトリ内の openspec 設定を確認
+# Check the openspec configuration in this repository
 openspec doctor
 
-# 現在の変更一覧を確認
+# List current changes
 openspec list
 ```
 
-### `openspec/` ディレクトリの構成
+### Layout of the `openspec/` directory
 
 ```
 openspec/
-├── config.yaml          # プロジェクトコンテキスト・ルール定義
-├── specs/                 # 確定済みの機能仕様（spec.md）
+├── config.yaml          # Project context and rule definitions
+├── specs/                 # Finalized feature specs (spec.md)
 │   ├── tui-shell/
 │   ├── collection-storage/
 │   ├── curl-execution/
 │   ├── environment-variables/
 │   └── request-editor/
-└── changes/               # 進行中・完了した変更（proposal/design/tasks）
+└── changes/               # In-progress and completed changes (proposal/design/tasks)
     ├── adhoc-request-mode/
     ├── stream-response-body/
-    └── archive/            # アーカイブ済みの変更
+    └── archive/            # Archived changes
 ```
 
-各ディレクトリの詳細な構成はリポジトリ内の実体（`ls openspec/specs` / `ls openspec/changes`）で随時確認してください。
+For the current contents of each directory, check the repository directly (`ls openspec/specs` / `ls openspec/changes`).
 
-### `openspec/config.yaml` の概要
+### Overview of `openspec/config.yaml`
 
 ```yaml
 schema: spec-driven
 context: |
-  言語：日本語
-  すべての成果物（proposal, tasks, spec など）は日本語で作成
-  ただし技術用語（API, REST, HTTP, TUI など）・コード・ファイルパスは英語のまま
+  Language: Japanese
+  All artifacts (proposal, tasks, spec, etc.) are written in Japanese
+  Technical terms (API, REST, HTTP, TUI, etc.), code, and file paths stay in English
 
   Tech stack:
-    - 言語: Go
+    - Language: Go
     - TUI: Bubble Tea + lipgloss + bubbles
 rules:
   proposal:
-    - 簡潔にまとめること
+    - Keep it concise
 ```
 
 ---
 
-## 開発ワークフロー
+## Development workflow
 
-### よく使うコマンド
+### Commonly used commands
 
 ```sh
-# ビルド
+# Build
 go build -o lazycurl ./cmd/lazycurl
 
-# 実行
+# Run
 ./lazycurl
 
-# テスト
+# Test
 go test ./...
 
-# 特定パッケージのテスト
+# Test a specific package
 go test ./internal/tui/...
 
-# フォーマット
-go fmt ./...
-
-# go.sum の更新
+# Sync go.sum
 go mod tidy
 ```
 
-> **Lint について**: `golangci-lint` などの追加lintツールは未導入です。`go vet` と `gofmt` の範囲のみをチェック対象とします（CI でも同様）。
+> **About lint**: no additional lint tool such as `golangci-lint` is set up. Only `go vet` and `gofmt` are checked (same in CI).
 
-### 機能追加の標準フロー（openspec 連携）
+### Standard feature workflow (via openspec)
 
-1. **アイデアの探索**（Claude Code セッション内）
+1. **Explore the idea** (inside a Claude Code session)
 
    ```
    /opsx:explore
    ```
 
-2. **変更プロポーザルの作成**
+2. **Create a change proposal**
 
    ```
    /opsx:propose
    ```
-   
-   proposal.md・design.md・tasks.md が `openspec/changes/<name>/` に自動生成されます。
 
-3. **実装**
+   `proposal.md`, `design.md`, and `tasks.md` are generated automatically under `openspec/changes/<name>/`.
+
+3. **Implement**
 
    ```
    /opsx:apply
    ```
-   
-   tasks.md のタスクを順番に実装します。
 
-4. **完了したら変更をアーカイブ**
+   Implements the tasks in `tasks.md` in order.
+
+4. **Archive the change once complete**
 
    ```
    /opsx:archive
@@ -234,33 +231,33 @@ go mod tidy
 
 ---
 
-## プロジェクト構成の概要
+## Project structure overview
 
 ```
 lazycurl/
 ├── cmd/
 │   └── lazycurl/
-│       ├── main.go          # エントリポイント
-│       ├── app.go           # アプリケーション本体
+│       ├── main.go          # Entry point
+│       ├── app.go           # Application core
 │       └── app_test.go
 ├── internal/
-│   ├── collection/          # コレクション管理（.http ファイル）
-│   ├── config/              # 設定ファイル管理
-│   ├── curlexec/            # curl サブプロセス実行
-│   ├── environment/         # 環境変数・変数展開
-│   ├── httpfile/            # .http ファイルのパーサー
-│   └── tui/                 # Bubble Tea TUI コンポーネント
+│   ├── collection/          # Collection management (.http files)
+│   ├── config/              # Configuration file management
+│   ├── curlexec/            # curl subprocess execution
+│   ├── environment/         # Environments and variable expansion
+│   ├── httpfile/            # .http file parser
+│   └── tui/                 # Bubble Tea TUI components
 │       ├── form/
 │       ├── shell/
 │       └── styles/
-├── openspec/                # 仕様管理（openspec CLI 用）
+├── openspec/                # Spec management (for the openspec CLI)
 │   ├── config.yaml
 │   ├── specs/
 │   └── changes/
 ├── .claude/
-│   ├── settings.local.json  # Claude Code 権限設定（各自で作成、リポジトリには未コミット）
-│   ├── commands/opsx/       # カスタムスラッシュコマンド定義
-│   └── skills/              # openspec 連携スキル定義
+│   ├── settings.local.json  # Claude Code permission settings (create yourself, not committed)
+│   ├── commands/opsx/       # Custom slash command definitions
+│   └── skills/              # openspec-related skill definitions
 ├── go.mod
 ├── go.sum
 └── README.md
@@ -268,24 +265,24 @@ lazycurl/
 
 ---
 
-## カスタムスラッシュコマンド（/opsx）
+## Custom slash commands (/opsx)
 
-Claude Code セッション内で使用できるプロジェクト固有のコマンドです。
+Project-specific commands available inside a Claude Code session.
 
-| コマンド | 説明 |
+| Command | Description |
 |---------|------|
-| `/opsx:propose` | 新機能の変更プロポーザルを作成（proposal.md・design.md・tasks.md を自動生成） |
-| `/opsx:apply` | 変更の tasks.md に基づいて実装を進める |
-| `/opsx:explore` | 思考整理モード。実装はせず、問題探索・要件整理に集中 |
-| `/opsx:archive` | 完了した変更をアーカイブに移動 |
+| `/opsx:propose` | Create a change proposal for a new feature (auto-generates proposal.md, design.md, tasks.md) |
+| `/opsx:apply` | Implement a change based on its tasks.md |
+| `/opsx:explore` | Thinking-partner mode. No implementation; focused on exploring problems and clarifying requirements |
+| `/opsx:archive` | Move a completed change into the archive |
 
-> これらのコマンドはすべて `openspec CLI` が必要です。インストール後に使用してください。
+> All of these commands require the `openspec` CLI. Use them after installing it.
 
 ---
 
-## 注意事項・トラブルシューティング
+## Notes and troubleshooting
 
-### curl が見つからない / バージョンが古い
+### `curl` not found / version too old
 
 ```sh
 # Ubuntu/Debian
@@ -294,59 +291,59 @@ sudo apt-get update && sudo apt-get install -y curl
 # macOS
 brew install curl
 
-# バージョン確認
+# Check the version
 curl --version
 ```
 
-### Go のバージョンが古い
+### Go version too old
 
 ```sh
-# Go の公式サイトから最新版をインストール
+# Install the latest version from the official Go site
 # https://go.dev/dl/
 
-# または mise / asdf などのバージョンマネージャーを使用
+# Or use a version manager such as mise / asdf
 mise use go@1.24.7
 ```
 
-### `openspec` コマンドが見つからない
+### `openspec` command not found
 
 ```sh
-# npm のグローバルパスが PATH に含まれているか確認
+# Check whether npm's global path is included in PATH
 npm config get prefix
-# 出力例: /home/user/.npm-global
+# Example output: /home/user/.npm-global
 
-# .zshrc または .bashrc に追加
+# Add it to .zshrc or .bashrc
 export PATH="$HOME/.npm-global/bin:$PATH"
 source ~/.zshrc
 ```
 
-### Claude Code セッションで openspec コマンドの許可を毎回聞かれる
+### Claude Code keeps asking to approve the openspec command every session
 
-[`.claude/settings.local.json` について](#プロジェクト固有の初期設定)の項を参照し、`Bash(openspec *)` を許可する設定を作成してください。
+See the [Project-specific setup](#project-specific-setup) section on `.claude/settings.local.json` and create a config that allows `Bash(openspec *)`.
 
-### WSL 上での PATH 問題
+### PATH issues under WSL
 
-WSL ではデフォルトで Windows 側の PATH が引き継がれます。Go や Node.js が Windows 側にインストールされている場合、WSL 内で別途インストールすることを推奨します。
+WSL inherits the Windows PATH by default. If Go or Node.js are installed on the Windows side, it's recommended to install them separately inside WSL as well.
 
 ```sh
-# WSL 内に Go をインストール（mise 使用例）
+# Install Go inside WSL (example using mise)
 curl https://mise.run | sh
 mise use go@1.24.7 node@lts
 ```
 
-### `go mod tidy` でエラーが出る
+### Errors from `go mod tidy`
 
 ```sh
-# ネットワーク経由でモジュールを取得する場合
+# When fetching modules over the network
 export GOPROXY=https://proxy.golang.org,direct
 go mod tidy
 ```
 
 ---
 
-## 参考リンク
+## References
 
-- [lazycurl GitHub リポジトリ](https://github.com/asunaro276/lazycurl)
-- [Claude Code ドキュメント](https://docs.anthropic.com/claude-code)
-- [Bubble Tea ドキュメント](https://github.com/charmbracelet/bubbletea)
+- [lazycurl GitHub repository](https://github.com/asunaro276/lazycurl)
+- [Claude Code documentation](https://docs.anthropic.com/claude-code)
+- [Bubble Tea documentation](https://github.com/charmbracelet/bubbletea)
 - [openspec CLI](https://www.npmjs.com/package/@fission-ai/openspec)

@@ -18,7 +18,7 @@ go fmt ./...                          # format
 go mod tidy                           # sync go.sum
 ```
 
-There is no Makefile or lint config in this repo — `go build`, `go test`, and `go fmt` are the only gates. GitHub Actions CI (`.github/workflows/ci.yml`) runs `go build ./...`, `go test ./...`, and `gofmt -l` on every push to any branch and every pull request. There is no `golangci-lint` config file; don't assume lint rules beyond `go vet`/`gofmt`.
+There is no Makefile or lint config in this repo — `go build`, `go test`, and `go fmt` are the only gates. GitHub Actions CI (`.github/workflows/ci.yml`) runs `go build ./...`, `go test ./...`, and `gofmt -l` on every push, to any branch. There is no `golangci-lint` config file; don't assume lint rules beyond `go vet`/`gofmt`.
 
 ### Release process
 

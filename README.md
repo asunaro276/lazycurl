@@ -42,34 +42,56 @@ If `curl` is not found, lazycurl shows an error and exits on startup. If the ver
 lazycurl
 ```
 
-### Adhoc / Collections modes
+### The shell: four always-visible panels
 
-lazycurl has two modes, `Adhoc` and `Collections`, which you can switch between at any time with the `[` / `]` keys. The active mode is highlighted in the tab at the top of the screen. `Adhoc` is the default mode on startup.
+lazycurl has no modes. On startup you always see the same fixed 2x2 grid of panels: **Request** (top-left), **Response** (top-right), **Collections** (bottom-left), **History** (bottom-right). There is no separate Adhoc/Collections mode and no layout to switch between.
 
-- **Adhoc**: Build and send a request on the fly, without creating or selecting a collection. It consists of three panes: the edit form, Response, and History. A request you build only exists in memory until you save it (`s` key), and `{{variable}}` expansion is not applied.
-- **Collections**: The traditional four-pane layout of Collections/Requests/Response/History. Requests are managed per collection, with environment variable expansion and switching.
+- **Request**: the request-editing form (Name/Method/URL, then Params/Headers/Auth/Body tabs). It always shows either a scratch request that doesn't belong to any collection yet, or a request loaded from a collection via the Collections panel. Edits are kept in memory only; nothing is written to disk until you save (`ctrl+s`).
+- **Response**: shows the result of whichever request was last sent, or a selected History entry. Display-only.
+- **Collections**: an accordion list of your collections. The collection under the cursor is expanded inline to show its requests; pressing `enter` on a request loads it into the Request panel.
+- **History**: every request/response pair you've sent, oldest first. Selecting an entry (`enter`) shows it in the Response panel.
 
-A request built in Adhoc mode can be saved at any time with the `s` key. You can choose an existing collection or create a new one; after saving, lazycurl automatically switches to `Collections` mode with the destination collection and request selected. The execution history (History) is shared between both modes.
+A scratch request built in the Request panel can be saved at any time with `ctrl+s`. If it has no name yet, you're prompted for one first; then you choose an existing collection or create a new one to save it into. The request stays loaded in the Request panel afterward, now bound to that collection.
 
 ### Keybindings (lazygit-style)
 
 | Key | Action |
 | --- | --- |
-| `[` / `]` | Switch between Adhoc/Collections mode |
 | `tab` / `shift+tab` | Move between panels |
-| `1`-`4` | Jump to a panel (1-3: Editor/Response/History in Adhoc mode, 1-4: Collections/Requests/Response/History in Collections mode) |
-| `j` / `k` | Move up/down |
-| `enter` | Send/confirm the selected item (sends the in-progress request in Adhoc mode) |
-| `n` | Create new (collection/request) |
-| `e` | Edit the request (edits the in-progress request in Adhoc mode) |
-| `s` | Save the Adhoc mode request to a collection |
-| `c` | Duplicate a request |
-| `d` / `x` | Delete a request |
-| `E` | Switch environment |
+| `0`-`3` | Jump directly to a panel (Request/Response/Collections/History) |
+| `j` / `k` | Move up/down within the focused panel |
 | `?` | Show help |
 | `q` / `ctrl-c` | Quit (cancels the in-flight request if one is sending) |
 
-Inside the request edit form, `ctrl-s` saves and `ctrl-q` discards changes and returns. In the Body tab, `ctrl-e` launches `$EDITOR` and reloads the file's contents once the external editor process exits.
+**Collections panel:**
+
+| Key | Action |
+| --- | --- |
+| `enter` | Load the request under the cursor into the Request panel |
+| `n` | Create a new request in the expanded collection |
+| `N` | Create a new collection |
+| `c` | Duplicate the request under the cursor |
+| `d` / `x` | Delete the request under the cursor (with confirmation) |
+| `E` | Switch the active environment for this collection |
+
+**Request panel:**
+
+| Key | Action |
+| --- | --- |
+| `enter` | Enter insert mode on the focused field |
+| `esc` | Leave insert mode |
+| `h` / `l` | Change the HTTP method (normal state) |
+| `[` / `]` | Switch the Params/Headers/Auth/Body tab (normal state) |
+| `ctrl+r` | Send the request |
+| `ctrl+s` | Save the request (prompts for a name first if unnamed) |
+
+In the Body tab, `ctrl-e` launches `$EDITOR` and reloads the file's contents once the external editor process exits.
+
+**History panel:**
+
+| Key | Action |
+| --- | --- |
+| `enter` | Show the selected entry in the Response panel |
 
 ## Collection storage format
 

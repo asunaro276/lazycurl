@@ -196,6 +196,39 @@ func TestShellStreamSendRendersChunksIncrementallyThenConfirmsHistory(t *testing
 	}
 }
 
+// TestShellFormNavigationPreservesStreamPragma is a regression test for a
+// bug where Editor.ToRequest() never round-tripped Pragmas.Stream: merely
+// navigating the [0] Request panel's form (no edits at all) after loading a
+// `@stream` request silently reset Pragmas.Stream to false via
+// syncEditorToTarget, so ctrl+r took the batch Execute() path instead of
+// beginStreamingSend. Navigating must not drop the pragma.
+func TestShellFormNavigationPreservesStreamPragma(t *testing.T) {
+	s := newStreamingTestShell(t, &fakeStreamRunner{statusCode: 200, chunks: [][]byte{[]byte("chunk-a")}})
+	s.SetScratchRequest(httpfile.Request{
+		Method:  "GET",
+		URL:     "https://example.com/events",
+		Pragmas: httpfile.Pragmas{Stream: true},
+	})
+
+	// Merely look around the form, as a user checking the request before
+	// sending it would -- no edits, just navigation.
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	s.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+
+	if !s.scratchRequest.Pragmas.Stream {
+		t.Fatal("expected Pragmas.Stream to survive form navigation")
+	}
+
+	cmd := s.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
+	if cmd == nil {
+		t.Fatal("expected a send command")
+	}
+	if s.liveResponse == nil {
+		t.Fatal("expected ctrl+r after navigation to still take the streaming path (liveResponse initialized)")
+	}
+}
+
 // TestShellStreamCancelConfirmsPartialBodyToHistory exercises ctrl-c
 // cancellation mid-stream: the partial body received so far must still be
 // confirmed into History, and not surfaced as an error.

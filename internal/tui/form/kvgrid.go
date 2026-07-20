@@ -44,7 +44,7 @@ type KVGrid struct {
 func NewKVGrid() KVGrid {
 	ti := textinput.New()
 	ti.Prompt = ""
-	return KVGrid{input: ti}
+	return KVGrid{input: ti, cursorCol: colKey}
 }
 
 func (g *KVGrid) Focus() { g.focused = true }
@@ -80,6 +80,17 @@ func (g *KVGrid) startEdit() {
 	g.input.CursorEnd()
 	g.input.Focus()
 	g.editing = true
+}
+
+// addRow appends a new enabled row and immediately starts editing its Key
+// cell. Used by both the "a" key and by "enter" pressed on an empty grid,
+// so a user can start typing a Param/Header without knowing "a" exists.
+func (g *KVGrid) addRow() {
+	g.Rows = append(g.Rows, httpfile.KV{Enabled: true})
+	g.cursorRow = len(g.Rows) - 1
+	g.cursorCol = colKey
+	g.startEdit()
+	g.advanceToValue = true
 }
 
 func (g *KVGrid) commitEdit() {
@@ -153,20 +164,16 @@ func (g KVGrid) Update(msg tea.Msg) (KVGrid, tea.Cmd) {
 			g.Rows[g.cursorRow].Enabled = !g.Rows[g.cursorRow].Enabled
 		}
 	case "enter":
-		if g.cursorCol == colEnabled {
-			if len(g.Rows) > 0 {
-				g.Rows[g.cursorRow].Enabled = !g.Rows[g.cursorRow].Enabled
-			}
+		if len(g.Rows) == 0 {
+			g.addRow()
+		} else if g.cursorCol == colEnabled {
+			g.Rows[g.cursorRow].Enabled = !g.Rows[g.cursorRow].Enabled
 		} else {
 			g.advanceToValue = false
 			g.startEdit()
 		}
 	case "a":
-		g.Rows = append(g.Rows, httpfile.KV{Enabled: true})
-		g.cursorRow = len(g.Rows) - 1
-		g.cursorCol = colKey
-		g.startEdit()
-		g.advanceToValue = true
+		g.addRow()
 	case "d", "x":
 		if len(g.Rows) > 0 {
 			g.Rows = append(g.Rows[:g.cursorRow], g.Rows[g.cursorRow+1:]...)

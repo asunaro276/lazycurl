@@ -69,6 +69,25 @@ func TestKVGridAddEditToggleDelete(t *testing.T) {
 	}
 }
 
+// TestKVGridEnterOnEmptyGridAddsRow confirms enter, not just 'a', starts a
+// new row when the grid has none -- so a user reaching Params/Headers with
+// nothing in it can start typing without knowing 'a' exists.
+func TestKVGridEnterOnEmptyGridAddsRow(t *testing.T) {
+	g := NewKVGrid()
+	g.Focus()
+
+	g, _ = g.Update(key("enter"))
+	if len(g.Rows) != 1 {
+		t.Fatalf("expected enter on an empty grid to add a row, got %d rows", len(g.Rows))
+	}
+	if !g.editing {
+		t.Fatal("expected enter on an empty grid to start editing the new row's key")
+	}
+	if g.cursorCol != colKey {
+		t.Fatalf("expected cursor on colKey after enter-created row, got %v", g.cursorCol)
+	}
+}
+
 func TestKVGridEditingExistingKeyDoesNotAdvanceToValue(t *testing.T) {
 	g := NewKVGrid()
 	g.Focus()

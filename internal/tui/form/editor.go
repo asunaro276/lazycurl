@@ -24,9 +24,10 @@ const (
 	TabHeaders
 	TabAuth
 	TabBody
+	TabOptions
 )
 
-var tabLabels = []string{"Params", "Headers", "Auth", "Body"}
+var tabLabels = []string{"Params", "Headers", "Auth", "Body", "Options"}
 
 // focusZone identifies which top-level part of the form the normal-state
 // cursor rests on.
@@ -69,12 +70,20 @@ type Editor struct {
 	pragTO     textinput.Model
 	pragK      bool
 	pragNoRdir bool
+	pragStream bool
+
+	// optionsIdx selects the row within the Options tab (0=Stream,
+	// 1=Insecure, 2=No-redirect, 3=Timeout). optionsEditingTO marks the
+	// Timeout row's text input as the currently owned field (Level 2,
+	// analogous to a KVGrid cell edit or an Auth credential field).
+	optionsIdx       int
+	optionsEditingTO bool
 
 	focus focusZone
-	// editing is the form's insert state: false (normal) means movement
-	// keys (j/k, h/l, [/]) navigate between Method/URL/tab content and
-	// switch tabs without touching any value; true (insert) means the
-	// field at e.focus owns keystrokes. This mirrors KVGrid's own
+	// editing is the form's insert state (Level 1/2): false (Level 0,
+	// normal) means movement keys (j/k, h/l) navigate between Method/URL/
+	// content and switch tabs without touching any value; true means the
+	// field/tab at e.focus owns keystrokes. This mirrors KVGrid's own
 	// editing/non-editing split, raised one level to cover the whole form.
 	editing bool
 	tab     tab
@@ -145,6 +154,7 @@ func FromRequest(req httpfile.Request) Editor {
 	e.pragK = req.Pragmas.Insecure
 	e.pragTO.SetValue(req.Pragmas.Timeout)
 	e.pragNoRdir = req.Pragmas.NoRedirect
+	e.pragStream = req.Pragmas.Stream
 	return e
 }
 
@@ -167,6 +177,7 @@ func (e Editor) ToRequest() httpfile.Request {
 			Insecure:   e.pragK,
 			Timeout:    e.pragTO.Value(),
 			NoRedirect: e.pragNoRdir,
+			Stream:     e.pragStream,
 		},
 	}
 }
@@ -215,6 +226,8 @@ func (e *Editor) focusActiveTab() {
 		e.focusAuthField()
 	case TabBody:
 		e.body.Focus()
+	case TabOptions:
+		e.optionsEditingTO = false
 	}
 }
 
@@ -241,6 +254,9 @@ func (e *Editor) focusAuthField() {
 func (e *Editor) SetTab(t tab) {
 	e.tab = t
 	e.authField = 0
+	e.optionsIdx = 0
+	e.optionsEditingTO = false
+	e.pragTO.Blur()
 }
 
 // Editing reports whether some part of the form -- a text field, the
@@ -295,19 +311,20 @@ func (e Editor) updateNormal(msg tea.KeyMsg) (Editor, tea.Cmd) {
 	case "k", "up":
 		e.FocusPrev()
 	case "h", "left":
-		if e.focus == focusMethod {
+		switch e.focus {
+		case focusMethod:
 			e.methodIdx = (e.methodIdx - 1 + len(Methods)) % len(Methods)
+		case focusContent:
+			n := tab(len(tabLabels))
+			e.SetTab((e.tab - 1 + n) % n)
 		}
 	case "l", "right":
-		if e.focus == focusMethod {
+		switch e.focus {
+		case focusMethod:
 			e.methodIdx = (e.methodIdx + 1) % len(Methods)
-		}
-	case "[", "]":
-		n := tab(len(tabLabels))
-		if msg.String() == "]" {
+		case focusContent:
+			n := tab(len(tabLabels))
 			e.SetTab((e.tab + 1) % n)
-		} else {
-			e.SetTab((e.tab - 1 + n) % n)
 		}
 	case "enter":
 		e.enterInsert()
@@ -379,6 +396,63 @@ func (e Editor) updateContentEditing(msg tea.KeyMsg) (Editor, tea.Cmd) {
 		var cmd tea.Cmd
 		e.body, cmd = e.body.Update(msg)
 		return e, cmd
+
+	case TabOptions:
+		if msg.String() == "esc" && !e.optionsEditingTO {
+			e.editing = false
+			return e, nil
+		}
+		return e.updateOptions(msg)
+	}
+	return e, nil
+}
+
+// updateOptions handles the Options tab's Level 1 (row navigation among
+// Stream/Insecure/No-redirect/Timeout) and Level 2 (Timeout's text edit)
+// states.
+func (e Editor) updateOptions(msg tea.KeyMsg) (Editor, tea.Cmd) {
+	if e.optionsEditingTO {
+		if msg.String() == "enter" || msg.String() == "esc" {
+			e.optionsEditingTO = false
+			e.pragTO.Blur()
+			return e, nil
+		}
+		var cmd tea.Cmd
+		e.pragTO, cmd = e.pragTO.Update(msg)
+		return e, cmd
+	}
+
+	switch msg.String() {
+	case "j", "down":
+		if e.optionsIdx < 3 {
+			e.optionsIdx++
+		}
+	case "k", "up":
+		if e.optionsIdx > 0 {
+			e.optionsIdx--
+		}
+	case "enter":
+		switch e.optionsIdx {
+		case 0:
+			e.pragStream = !e.pragStream
+		case 1:
+			e.pragK = !e.pragK
+		case 2:
+			e.pragNoRdir = !e.pragNoRdir
+		case 3:
+			e.optionsEditingTO = true
+			e.pragTO.CursorEnd()
+			e.pragTO.Focus()
+		}
+	case " ":
+		switch e.optionsIdx {
+		case 0:
+			e.pragStream = !e.pragStream
+		case 1:
+			e.pragK = !e.pragK
+		case 2:
+			e.pragNoRdir = !e.pragNoRdir
+		}
 	}
 	return e, nil
 }
@@ -501,7 +575,7 @@ func (e Editor) View() string {
 
 	methodView := Methods[e.methodIdx]
 	if e.focus == focusMethod {
-		methodView = styleFocusBorder.Render(methodView)
+		methodView = styleFocusBorder.Render("◀ " + methodView + " ▶")
 	} else {
 		methodView = stylePlainBorder.Render(methodView)
 	}
@@ -536,9 +610,50 @@ func (e Editor) View() string {
 		b.WriteString(e.viewAuth())
 	case TabBody:
 		b.WriteString(e.body.View())
+	case TabOptions:
+		b.WriteString(e.viewOptions())
 	}
 
 	return b.String()
+}
+
+// viewOptions renders the Options tab: Stream/Insecure/No-redirect as
+// checkbox-style rows and Timeout as a row with a text input, all sharing
+// the same box-based visual language as KVGrid's cells.
+func (e Editor) viewOptions() string {
+	rows := []struct {
+		label   string
+		checked bool
+	}{
+		{"Stream", e.pragStream},
+		{"Insecure", e.pragK},
+		{"No-redirect", e.pragNoRdir},
+	}
+
+	var lines []string
+	for i, r := range rows {
+		box := "[ ]"
+		if r.checked {
+			box = "[x]"
+		}
+		style := styleBoxPlain
+		if e.focus == focusContent && e.optionsIdx == i {
+			style = styleBoxCursor
+		}
+		lines = append(lines, style.Render(box)+" "+styleFieldLabel.Render(r.label))
+	}
+
+	toStyle := styleBoxPlain
+	switch {
+	case e.optionsEditingTO:
+		toStyle = styleBoxEditing
+	case e.focus == focusContent && e.optionsIdx == 3:
+		toStyle = styleBoxCursor
+	}
+	toBox := toStyle.Render("[") + " " + pad(e.pragTO.View(), kvCellWidth) + " " + toStyle.Render("]")
+	lines = append(lines, toBox+" "+styleFieldLabel.Render("Timeout"))
+
+	return strings.Join(lines, "\n")
 }
 
 func (e Editor) viewAuth() string {
@@ -559,6 +674,55 @@ func (e Editor) viewAuth() string {
 		b.WriteString(styleFieldLabel.Render("Token: ") + e.authToken.View())
 	}
 	return b.String()
+}
+
+const (
+	hintPanelNav = "  ctrl+r: 送信  ctrl+s: 保存  0-3/tab: パネル移動  ?: ヘルプ  q: 終了"
+	hintSending  = "  ctrl+r: 送信  ctrl+s: 保存  ctrl+c: 終了"
+)
+
+// FooterHint returns the keybinding hint text for the form's current
+// Level 0/1/2 state and active tab, so the shell's status bar always shows
+// only the keys that are actually usable right now.
+func (e Editor) FooterHint() string {
+	if !e.editing {
+		switch e.focus {
+		case focusMethod:
+			return "h/l: Method変更  j/k: 移動  enter: 編集開始" + hintPanelNav
+		case focusURL:
+			return "j/k: 移動  enter: 編集開始" + hintPanelNav
+		default: // focusContent
+			return "j/k: 移動  h/l: タブ切替  enter: 編集開始" + hintPanelNav
+		}
+	}
+
+	switch e.tab {
+	case TabParams, TabHeaders:
+		grid := e.params
+		if e.tab == TabHeaders {
+			grid = e.headers
+		}
+		if grid.Editing() {
+			return "enter: 確定  esc: キャンセル" + hintSending
+		}
+		return "j/k: 行移動  h/l: 列移動  enter: セル編集開始  a: 行追加  d/x: 行削除  space: 有効/無効切替  esc: 戻る" + hintSending
+
+	case TabAuth:
+		if e.authField == 0 {
+			return "h/l: タイプ選択  enter/down: 認証情報へ  esc: 戻る" + hintSending
+		}
+		return "esc: 戻る  ↑/↓: フィールド移動" + hintSending
+
+	case TabBody:
+		return "ctrl-e: 外部エディタ  esc: 戻る" + hintSending
+
+	case TabOptions:
+		if e.optionsEditingTO {
+			return "enter: 確定  esc: キャンセル" + hintSending
+		}
+		return "j/k: 移動  enter/space: トグル・入力開始  esc: 戻る" + hintSending
+	}
+	return "esc: 前の階層に戻る" + hintSending
 }
 
 func max(a, b int) int {

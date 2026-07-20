@@ -244,10 +244,7 @@ func (s *Shell) viewStatusBar() string {
 func (s *Shell) footerHint() string {
 	switch s.focus {
 	case PanelRequest:
-		if s.editor.Editing() {
-			return "esc: 前の階層に戻る  ctrl+r: 送信  ctrl+s: 保存  ctrl+c: 終了"
-		}
-		return "j/k: 移動  h/l: Method変更  enter: 編集開始  [/]: タブ切替  ctrl+r: 送信  ctrl+s: 保存  0-3/tab: パネル移動  ?: ヘルプ  q: 終了"
+		return s.editor.FooterHint()
 	case PanelCollections:
 		return "j/k: 移動  enter: 開く/ロード  n: 新規リクエスト  N: 新規コレクション  c: 複製  d/x: 削除  E: environment切替  0-3/tab: パネル移動  ?: ヘルプ  q: 終了"
 	case PanelHistory:
@@ -271,11 +268,11 @@ func (s *Shell) viewHelp() string {
 	lines = append(lines, "")
 	switch s.focus {
 	case PanelRequest:
-		lines = append(lines, "j/k               Method/URL/タブ内容間を移動 (normal)")
-		lines = append(lines, "h/l               Methodを変更 (normal)")
-		lines = append(lines, "enter             フィールドへinsert (normal -> insert)")
-		lines = append(lines, "esc               1階層戻る (insert -> normal)")
-		lines = append(lines, "[ / ]             タブ切替 (normal, Params/Headers/Auth/Body)")
+		lines = append(lines, "j/k               Method/URL/Content間を移動 (Level 0)")
+		lines = append(lines, "h/l               Methodを変更、またContentではタブ切替 (Level 0)")
+		lines = append(lines, "enter             ゾーン/タブの中へ (Level 0 -> Level 1)")
+		lines = append(lines, "esc               1階層戻る")
+		lines = append(lines, "                  Params/Headers/Auth/Body/Options の5タブ")
 		lines = append(lines, "ctrl+r            送信")
 		lines = append(lines, "ctrl+s            保存 (無名なら名前を確認)")
 	case PanelCollections:
